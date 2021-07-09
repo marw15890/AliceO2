@@ -151,6 +151,7 @@ void run_completion(uv_work_t* handle, int status)
     context.deviceContext->quotaEvaluator->consume(task->id.index, consumer);
   }
   context.deviceContext->state->offerConsumers.clear();
+  context.deviceContext->quotaEvaluator->handleExpired();
   context.deviceContext->quotaEvaluator->dispose(task->id.index);
   task->running = false;
   ZoneScopedN("run_completion");
@@ -342,10 +343,25 @@ void on_signal_callback(uv_signal_t* handle, int signum)
   context->stats->totalSigusr1 += 1;
 }
 
+/// Invoke the callbacks for the mPendingRegionInfos
+void handleRegionCallbacks(ServiceRegistry& registry, std::vector<FairMQRegionInfo>& infos)
+{
+  if (infos.empty() == false) {
+    std::vector<FairMQRegionInfo> toBeNotified;
+    toBeNotified.swap(infos); // avoid any MT issue.
+    for (auto const& info : toBeNotified) {
+      registry.get<CallbackService>()(CallbackService::Id::RegionInfoCallback, info);
+    }
+  }
+}
+
 void DataProcessingDevice::InitTask()
 {
   for (auto& channel : fChannels) {
-    channel.second.at(0).Transport()->SubscribeToRegionEvents([&pendingRegionInfos = mPendingRegionInfos, &regionInfoMutex = mRegionInfoMutex](FairMQRegionInfo info) {
+    channel.second.at(0).Transport()->SubscribeToRegionEvents([this,
+                                                               &registry = mServiceRegistry,
+                                                               &pendingRegionInfos = mPendingRegionInfos,
+                                                               &regionInfoMutex = mRegionInfoMutex](FairMQRegionInfo info) {
       std::lock_guard<std::mutex> lock(regionInfoMutex);
       LOG(debug) << ">>> Region info event" << info.event;
       LOG(debug) << "id: " << info.id;
@@ -353,6 +369,10 @@ void DataProcessingDevice::InitTask()
       LOG(debug) << "size: " << info.size;
       LOG(debug) << "flags: " << info.flags;
       pendingRegionInfos.push_back(info);
+      // When not running we can handle the callbacks synchronously.
+      if (this->GetCurrentState() != fair::mq::State::Running) {
+        handleRegionCallbacks(registry, pendingRegionInfos);
+      }
     });
   }
 
@@ -497,6 +517,12 @@ void DataProcessingDevice::Reset() { mServiceRegistry.get<CallbackService>()(Cal
 
 bool DataProcessingDevice::ConditionalRun()
 {
+  // Notify on the main thread the new region callbacks, making sure
+  // no callback is issued if there is something still processing.
+  {
+    std::lock_guard<std::mutex> lock(mRegionInfoMutex);
+    handleRegionCallbacks(mServiceRegistry, mPendingRegionInfos);
+  }
   // This will block for the correct delay (or until we get data
   // on a socket). We also do not block on the first iteration
   // so that devices which do not have a timer can still start an
@@ -528,15 +554,13 @@ bool DataProcessingDevice::ConditionalRun()
 
   // Notify on the main thread the new region callbacks, making sure
   // no callback is issued if there is something still processing.
+  // Notice that we still need to perform callbacks also after
+  // the socket epolled, because otherwise we would end up serving
+  // the callback after the first data arrives is the system is too
+  // fast to transition from Init to Run.
   {
     std::lock_guard<std::mutex> lock(mRegionInfoMutex);
-    if (mPendingRegionInfos.empty() == false) {
-      std::vector<FairMQRegionInfo> toBeNotified;
-      toBeNotified.swap(mPendingRegionInfos); // avoid any MT issue.
-      for (auto const& info : toBeNotified) {
-        mServiceRegistry.get<CallbackService>()(CallbackService::Id::RegionInfoCallback, info);
-      }
-    }
+    handleRegionCallbacks(mServiceRegistry, mPendingRegionInfos);
   }
 
   assert(mStreams.size() == mHandles.size());
@@ -575,6 +599,7 @@ bool DataProcessingDevice::ConditionalRun()
       run_completion(&handle, 0);
 #endif
     } else {
+      mDataProcessorContexes.at(0).deviceContext->quotaEvaluator->handleExpired();
       mWasActive = false;
     }
   } else {
@@ -1197,9 +1222,11 @@ bool DataProcessingDevice::tryDispatchComputation(DataProcessorContext& context,
 
     uint64_t tStart = uv_hrtime();
     preUpdateStats(action, record, tStart);
-    try {
-      if (context.deviceContext->state->quitRequested == false) {
 
+    static bool noCatch = getenv("O2_NO_CATCHALL_EXCEPTIONS") && strcmp(getenv("O2_NO_CATCHALL_EXCEPTIONS"), "0");
+
+    auto runNoCatch = [&context, &processContext]() {
+      if (context.deviceContext->state->quitRequested == false) {
         if (*context.statefulProcess) {
           ZoneScopedN("statefull process");
           (*context.statefulProcess)(processContext);
@@ -1214,16 +1241,24 @@ bool DataProcessingDevice::tryDispatchComputation(DataProcessorContext& context,
           context.registry->postProcessingCallbacks(processContext);
         }
       }
-    } catch (std::exception& ex) {
-      ZoneScopedN("error handling");
-      /// Convert a standatd exception to a RuntimeErrorRef
-      /// Notice how this will lose the backtrace information
-      /// and report the exception coming from here.
-      auto e = runtime_error(ex.what());
-      (*context.errorHandling)(e, record);
-    } catch (o2::framework::RuntimeErrorRef e) {
-      ZoneScopedN("error handling");
-      (*context.errorHandling)(e, record);
+    };
+
+    if (noCatch) {
+      runNoCatch();
+    } else {
+      try {
+        runNoCatch();
+      } catch (std::exception& ex) {
+        ZoneScopedN("error handling");
+        /// Convert a standard exception to a RuntimeErrorRef
+        /// Notice how this will lose the backtrace information
+        /// and report the exception coming from here.
+        auto e = runtime_error(ex.what());
+        (*context.errorHandling)(e, record);
+      } catch (o2::framework::RuntimeErrorRef e) {
+        ZoneScopedN("error handling");
+        (*context.errorHandling)(e, record);
+      }
     }
 
     postUpdateStats(action, record, tStart);
