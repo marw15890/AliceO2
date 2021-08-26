@@ -55,14 +55,15 @@ class Trap2CRU
   uint32_t buildHalfCRUHeader(HalfCRUHeader& header, const uint32_t bc, const uint32_t halfcru); // build the half cru header holding the lengths of all links amongst other things.
   void linkSizePadding(uint32_t linksize, uint32_t& crudatasize, uint32_t& padding);             // pad the link data stream to align with 256 bit words.
   void openInputFiles();
-  void setTrackletHCHeader(bool tracklethcheader) { mUseTrackletHCHeader = tracklethcheader; }
+  void setTrackletHCHeader(int tracklethcheader) { mUseTrackletHCHeader = tracklethcheader; }
   bool isTrackletOnLink(int link, int trackletpos); // is the current tracklet on the the current link
   bool isDigitOnLink(int link, int digitpos);       // is the current digit on the current link
   int buildDigitRawData(const int digitstartindex, const int digitendindex, const int mcm, const int rob, const uint32_t triggercount);
   int buildTrackletRawData(const int trackletindex, const int linkid); // from the current position in the tracklet vector, build the outgoing data for the current mcm the tracklet is on.
   int writeDigitEndMarker();                                           // write the digit end marker 0x0 0x0
   int writeTrackletEndMarker();                                        // write the tracklet end maker 0x10001000 0x10001000
-  int writeHCHeader(const int eventcount, uint32_t linkid);            // write the HalfChamberHeader into the stream, after the tracklet endmarker and before the digits.
+  int writeDigitHCHeader(const int eventcount, uint32_t linkid);       // write the Digit HalfChamberHeader into the stream, after the tracklet endmarker and before the digits.
+  int writeTrackletHCHeader(const int eventcount, uint32_t linkid);    // write the Tracklet HalfChamberHeader into the stream, at the beginning of data iff there is tracklet data.
 
   bool digitindexcompare(const o2::trd::Digit& A, const o2::trd::Digit& B);
   //boohhl digitindexcompare(const unsigned int A, const unsigned int B);
@@ -87,7 +88,7 @@ class Trap2CRU
   //HalfCRUHeader mHalfCRUHeader;
   //TrackletMCMHeader mTrackletMCMHeader;
   // TrackletMCMData mTrackletMCMData;
-  bool mUseTrackletHCHeader{false};
+  int mUseTrackletHCHeader{0};
   std::vector<char> mRawData; // store for building data event for a single half cru
   uint32_t mRawDataPos = 0;
   char* mRawDataPtr{nullptr};

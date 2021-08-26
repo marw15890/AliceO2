@@ -1,18 +1,23 @@
 {
-  "dataSamplingPolicies": [
+  "dataSamplingPolicies" : [
     {
-      "id": "tpcclusters",
-      "active": "true",
-      "machines": [],
+      "id" : "tpcclusters",
+      "active" : "true",
       "query" : "clusters:TPC/CLUSTERS;clusters_p:TPC/CLUSTERS_P",
-      "samplingConditions": []
+      "samplingConditions" : [],
+      "bindLocation" : "local"
     },
     {
-      "id": "tpcraw",
-      "active": "true",
-      "machines": [],
-      "query": "clusters:TPC/RAWDATA",
-      "samplingConditions": []
+      "id" : "tpcraw",
+      "active" : "true",
+      "machines" : [
+        "machineA",
+        "machineB"
+      ],
+      "port" : "1234",
+      "query" : "clusters:TPC/RAWDATA",
+      "outputs" : "clusters:TPC/SMP_RAWDATA",
+      "samplingConditions" : []
     }
   ]
 }

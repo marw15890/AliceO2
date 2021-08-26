@@ -145,6 +145,7 @@ bind:
 command:
   shell: true
   log: "{{ log_task_output }}"
+  env: ["O2_DETECTOR={{ detector }}"]
   user: "{{ user }}"
   value: "{{ len(modulepath)>0 ? _module_cmdline : _plain_cmdline }}"
   arguments:
@@ -179,6 +180,8 @@ command:
     - "'info'"
     - "--shm-mlock-segment"
     - "'false'"
+    - "--shm-mlock-segment-on-creation"
+    - "'false'"
     - "--shm-segment-id"
     - "'0'"
     - "--shm-zero-segment"
@@ -207,6 +210,7 @@ bind:
 command:
   shell: true
   log: "{{ log_task_output }}"
+  env: ["O2_DETECTOR={{ detector }}"]
   user: "{{ user }}"
   value: "{{ len(modulepath)>0 ? _module_cmdline : _plain_cmdline }}"
   arguments:
@@ -241,6 +245,8 @@ command:
     - "'info'"
     - "--shm-mlock-segment"
     - "'false'"
+    - "--shm-mlock-segment-on-creation"
+    - "'false'"
     - "--shm-segment-id"
     - "'0'"
     - "--shm-zero-segment"
@@ -269,6 +275,7 @@ bind:
 command:
   shell: true
   log: "{{ log_task_output }}"
+  env: ["O2_DETECTOR={{ detector }}"]
   user: "{{ user }}"
   value: "{{ len(modulepath)>0 ? _module_cmdline : _plain_cmdline }}"
   arguments:
@@ -303,6 +310,8 @@ command:
     - "'info'"
     - "--shm-mlock-segment"
     - "'false'"
+    - "--shm-mlock-segment-on-creation"
+    - "'false'"
     - "--shm-segment-id"
     - "'0'"
     - "--shm-zero-segment"
@@ -332,6 +341,7 @@ bind:
 command:
   shell: true
   log: "{{ log_task_output }}"
+  env: ["O2_DETECTOR={{ detector }}"]
   user: "{{ user }}"
   value: "{{ len(modulepath)>0 ? _module_cmdline : _plain_cmdline }}"
   arguments:
@@ -365,6 +375,8 @@ command:
     - "--severity"
     - "'info'"
     - "--shm-mlock-segment"
+    - "'false'"
+    - "--shm-mlock-segment-on-creation"
     - "'false'"
     - "--shm-segment-id"
     - "'0'"

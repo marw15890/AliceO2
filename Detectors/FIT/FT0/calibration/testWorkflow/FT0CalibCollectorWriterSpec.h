@@ -35,7 +35,7 @@ class FT0CalibCollectorWriter : public o2::framework::Task
  public:
   void createAndOpenFileAndTree()
   {
-    TString filename = TString::Format("collFT0_%d.root", mCount);
+    TString filename = TString::Format("collFT0%d.root", mCount);
     LOG(DEBUG) << "opening file " << filename.Data();
     mfileOut.reset(TFile::Open(TString::Format("%s", filename.Data()), "RECREATE"));
     mOutputTree = std::make_unique<TTree>("treeCollectedCalibInfo", "Tree with FT0 calib info for Time Slewing");
@@ -46,7 +46,7 @@ class FT0CalibCollectorWriter : public o2::framework::Task
   {
     mCount = 0;
     createAndOpenFileAndTree();
-    mFT0CalibInfoOut.reserve(1000000 * Geo::Nchannels); // tree size  208ch * 10^6 entries * 12 byte
+    mFT0CalibInfoOut.reserve(1000000 * Geo::Nchannels); // tree size  216ch * 10^6 entries * 12 byte
   }
 
   void run(o2::framework::ProcessingContext& pc) final
@@ -108,7 +108,7 @@ namespace framework
 
 DataProcessorSpec getFT0CalibCollectorWriterSpec()
 {
-  LOG(INFO) << " @@@@ getFT0CalibCollectorWriterSpec ";
+  LOG(DEBUG) << " @@@@ getFT0CalibCollectorWriterSpec ";
   using device = o2::calibration::FT0CalibCollectorWriter;
   std::vector<InputSpec> inputs;
   inputs.emplace_back("collectedInfo", o2::header::gDataOriginFT0, "COLLECTEDINFO");

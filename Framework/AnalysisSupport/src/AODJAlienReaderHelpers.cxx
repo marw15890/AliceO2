@@ -159,6 +159,7 @@ AlgorithmSpec AODJAlienReaderHelpers::rootFileReaderCallback()
     monitoring.send(Metric{(uint64_t)0, "arrow-messages-created"}.addTag(Key::Subsystem, monitoring::tags::Value::DPL));
     monitoring.send(Metric{(uint64_t)0, "arrow-bytes-destroyed"}.addTag(Key::Subsystem, monitoring::tags::Value::DPL));
     monitoring.send(Metric{(uint64_t)0, "arrow-messages-destroyed"}.addTag(Key::Subsystem, monitoring::tags::Value::DPL));
+    monitoring.send(Metric{(uint64_t)0, "arrow-bytes-expired"}.addTag(Key::Subsystem, monitoring::tags::Value::DPL));
     monitoring.flushBuffer();
 
     if (!options.isSet("aod-file")) {
@@ -238,7 +239,10 @@ AlgorithmSpec AODJAlienReaderHelpers::rootFileReaderCallback()
 
       auto ioStart = uv_hrtime();
 
-      for (auto route : requestedTables) {
+      for (auto& route : requestedTables) {
+        if ((device.inputTimesliceId % route.maxTimeslices) != route.timeslice) {
+          continue;
+        }
 
         // create header
         auto concrete = DataSpecUtils::asConcreteDataMatcher(route.matcher);
@@ -289,6 +293,7 @@ AlgorithmSpec AODJAlienReaderHelpers::rootFileReaderCallback()
         // add branches to read
         // fill the table
         auto colnames = getColumnNames(dh);
+        t2t.setLabel(tr->GetName());
         if (colnames.size() == 0) {
           totalSizeCompressed += tr->GetZipBytes();
           totalSizeUncompressed += tr->GetTotBytes();
