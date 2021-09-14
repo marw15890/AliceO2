@@ -13,6 +13,9 @@
 #include <TMath.h>
 #include <TString.h>
 
+#include "TGeoGlobalMagField.h"
+#include "Field/MagneticField.h"
+#include "DetectorsBase/Propagator.h"
 #include "ITSBase/GeometryTGeo.h"
 #include "SimulationDataFormat/TrackReference.h"
 #include "SimulationDataFormat/MCTrack.h"
@@ -50,10 +53,8 @@ struct DataFrames {
   int lastIndex = -1;
 };
 
-void CheckTracks(std::string tracfile = "o2trac_its.root", std::string clusfile = "o2clus_its.root", std::string kinefile = "o2sim_Kine.root")
+void CheckTracks(std::string tracfile = "o2trac_its.root", std::string clusfile = "o2clus_its.root", std::string kinefile = "o2sim_Kine.root", std::string grpfile = "o2sim_grp.root")
 {
-  bool filterMultiROFTracks = 1;
-
   using namespace o2::itsmft;
   using namespace o2::its;
 
@@ -67,6 +68,12 @@ void CheckTracks(std::string tracfile = "o2trac_its.root", std::string clusfile 
                             "mcLam:recLam:"
                             "mcPt:recPt:"
                             "ipD:ipZ:label");
+
+  // Magnetic field
+  o2::base::Propagator::initFieldFromGRP(grpfile.data());
+  auto field = static_cast<o2::field::MagneticField*>(TGeoGlobalMagField::Instance()->GetField());
+  double orig[3] = {0., 0., 0.};
+  float bz = field->getBz(orig);
 
   // Geometry
   o2::base::GeometryManager::loadGeometry();
@@ -153,14 +160,16 @@ void CheckTracks(std::string tracfile = "o2trac_its.root", std::string clusfile 
     if (!recTree->GetEvent(frame))
       continue;
     int loadedEventTracks = frame;
+    cout << "Number of tracks in frame " << frame << ": " << recArr->size() << std::endl;
     for (unsigned int i = 0; i < recArr->size(); i++) { // Find the last MC event within this reconstructed entry
       auto lab = (*trkLabArr)[i];
       if (!lab.isValid()) {
         const TrackITS& recTrack = (*recArr)[i];
         fak->Fill(recTrack.getPt());
       }
-      if (!lab.isValid() || lab.getSourceID() != 0 || lab.getEventID() < 0 || lab.getEventID() >= nev)
+      if (!lab.isValid() || lab.getSourceID() != 0 || lab.getEventID() < 0 || lab.getEventID() >= nev) {
         continue;
+      }
       trackFrames[lab.getEventID()].update(frame, i);
     }
   }
@@ -218,11 +227,12 @@ void CheckTracks(std::string tracfile = "o2trac_its.root", std::string clusfile 
           cout << "track mc label is too big!!!" << endl;
           continue;
         }
-        if (lab.isFake()) {
-          mapNFakes[mcid]++;
-        } else if (trackMap[mcid] >= 0) {
+        if (trackMap[mcid] >= 0) {
           mapNClones[mcid]++;
         } else {
+          if (lab.isFake()) {
+            mapNFakes[mcid]++;
+          }
           trackMap[mcid] = trackStore.size();
           const TrackITS& recTrack = (*recArr)[i];
           trackStore.emplace_back(recTrack);
@@ -261,13 +271,6 @@ void CheckTracks(std::string tracfile = "o2trac_its.root", std::string clusfile 
 
         const CompClusterExt& c = (*clusArr)[i];
 
-        /* FIXME
-        if (clusRofMap[mcid] < 0) {
-          clusRofMap[mcid] = c.getROFrame();
-        }
-        if (filterMultiROFTracks && (clusRofMap[mcid] != (int)c.getROFrame()))
-          continue;
-*/
         nClusters++;
 
         int& ok = clusMap[mcid];
@@ -299,26 +302,20 @@ void CheckTracks(std::string tracfile = "o2trac_its.root", std::string clusfile 
 
       const auto& mcTrack = (*mcArr)[mc];
 
-      if (mapNFakes[mc] > 0) { // Fake-track rate calculation
-        nFak += mapNFakes[mc];
-        fak->Fill(mcTrack.GetPt(), mapNFakes[mc]);
-      }
+      auto x = mcTrack.Vx();
+      auto y = mcTrack.Vy();
+      if (x * x + y * y > 1)
+        continue; // Select quasi-primary particles, originating from within the beam pipe
 
-      Int_t mID = mcTrack.getMotherTrackId();
-      if (mID >= 0) {
-        const auto& mom = (*mcArr)[mID];
-        int pdg = std::abs(mom.GetPdgCode());
-        if (pdg > 100 || (pdg < 20 && pdg > 10))
-          continue; // Select primary particles
-      }
       Int_t pdg = mcTrack.GetPdgCode();
       if (TMath::Abs(pdg) != 211)
         continue; // Select pions
 
-      if (clusMap[mc] != 0b1111111)
-        continue;
+      if (TMath::Abs(mcTrack.GetEta()) > 1.2)
+        continue; // Select within the acceptance in eta
 
-      nGen++; // Generated tracks for the efficiency calculation
+      if (clusMap[mc] != 0b1111111)
+        continue; // Select only if all 7 layers have a cluster
 
       // Float_t mcYOut=-1., recYOut=-1.;
       Float_t mcZOut = -1., recZOut = -1.;
@@ -331,14 +328,26 @@ void CheckTracks(std::string tracfile = "o2trac_its.root", std::string clusfile 
       Float_t mcPt = mcTrack.GetPt(), recPt = -1.;
       Float_t mcLam = TMath::ATan2(mcPz, mcPt), recLam = -1.;
       Float_t ip[2]{0., 0.};
-      Float_t label = -123456789.;
+      Float_t label = mc;
 
+      nGen++; // Generated tracks for the efficiency calculation
       den->Fill(mcPt);
 
-      if (trackMap[mc] >= 0) {
-        nGoo++; // Good found tracks for the efficiency calculation
-        num->Fill(mcPt);
+      if (mapNClones[mc] > 0) { // Clone-track rate calculation
+        nClone += mapNClones[mc];
+        clone->Fill(mcPt, mapNClones[mc]);
+        continue;
+      }
 
+      if (trackMap[mc] > 0) {
+        if (mapNFakes[mc] > 0) { // Fake-track rate calculation
+          nFak += mapNFakes[mc];
+          fak->Fill(mcTrack.GetPt(), mapNFakes[mc]);
+          label = -mc;
+        } else { // Good found tracks for the efficiency calculation
+          nGoo++;
+          num->Fill(mcPt);
+        }
         const TrackITS& recTrack = trackStore[trackMap[mc]];
         auto out = recTrack.getParamOut();
         // recYOut = out.getY();
@@ -351,18 +360,12 @@ void CheckTracks(std::string tracfile = "o2trac_its.root", std::string clusfile 
         recPhi = TMath::ATan2(p[1], p[0]);
         recLam = TMath::ATan2(p[2], recPt);
         Float_t vx = 0., vy = 0., vz = 0.; // Assumed primary vertex
-        Float_t bz = 5.;                   // Assumed magnetic field
         recTrack.getImpactParams(vx, vy, vz, bz, ip);
-
-        nt->Fill( // mcYOut,recYOut,
-          mcZOut, recZOut, mcPhiOut, recPhiOut, mcThetaOut, recThetaOut, mcPhi, recPhi, mcLam, recLam, mcPt, recPt, ip[0],
-          ip[1], mc);
       }
 
-      if (mapNClones[mc] > 0) { // Clone-track rate calculation
-        nClone += mapNClones[mc];
-        clone->Fill(mcPt, mapNClones[mc]);
-      }
+      nt->Fill( // mcYOut,recYOut,
+        mcZOut, recZOut, mcPhiOut, recPhiOut, mcThetaOut, recThetaOut, mcPhi, recPhi,
+        mcLam, recLam, mcPt, recPt, ip[0], ip[1], label);
     }
 
     statGen += nGen;
@@ -390,12 +393,27 @@ void CheckTracks(std::string tracfile = "o2trac_its.root", std::string clusfile 
     std::cout << "Good found tracks/event: " << statGoo / nDataEvents << ",  efficiency: " << eff << ",  fake-track rate: " << rat << " clone rate " << clonerat << std::endl;
   }
 
+  TH1F* hg = new TH1F("hg", "Transverse impact parameter; D (cm)", 30, -0.1, 0.1);
+  hg->SetLineColor(4);
+  TH1F* hf = new TH1F("hf", "Transverse impact parameter; D (cm)", 30, -0.1, 0.1);
+  hf->SetLineColor(2);
+
   // "recPt>0" means "found tracks only"
   // "label>0" means "found good tracks only"
+  nt->Draw("ipD>>hg", "recPt>0 && label>0", "goff");
+  auto norm = hg->Integral();
+  if (norm > 0)
+    hg->Scale(1. / norm);
+  nt->Draw("ipD>>hf", "recPt>0 && label<0", "goff");
+  norm = hf->Integral();
+  if (norm > 0)
+    hf->Scale(1. / norm);
+
+  new TCanvas("d", "d", 600, 600);
+  hg->Draw("hist");
+  hf->Draw("histsame");
 
   /*
-  new TCanvas;
-  nt->Draw("ipD", "recPt>0 && label>0");
   new TCanvas;
   nt->Draw("mcLam-recLam", "recPt>0 && label>0");
   new TCanvas;

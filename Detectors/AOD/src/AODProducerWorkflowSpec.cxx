@@ -32,6 +32,7 @@
 #include "Framework/Logger.h"
 #include "Framework/TableBuilder.h"
 #include "Framework/TableTreeHelpers.h"
+#include "FT0Base/Geometry.h"
 #include "GlobalTracking/MatchTOF.h"
 #include "ReconstructionDataFormats/Cascade.h"
 #include "MCHTracking/TrackExtrap.h"
@@ -51,7 +52,6 @@
 #include <map>
 #include <unordered_map>
 #include <vector>
-#include "FT0Base/Geometry.h"
 
 using namespace o2::framework;
 using namespace o2::math_utils::detail;
@@ -396,7 +396,7 @@ void AODProducerWorkflowDPL::fillMCParticlesTable(o2::steer::MCKinematicsReader&
                                                   gsl::span<const o2::dataformats::VtxTrackRef>& primVer2TRefs,
                                                   gsl::span<const GIndex>& GIndices,
                                                   o2::globaltracking::RecoContainer& data,
-                                                  std::vector<std::pair<int, int>> const& mccolid_to_eventandsource)
+                                                  std::vector<std::pair<int, int>> const& mcColToEvSrc)
 {
   // mark reconstructed MC particles to store them into the table
   for (auto& trackRef : primVer2TRefs) {
@@ -437,9 +437,9 @@ void AODProducerWorkflowDPL::fillMCParticlesTable(o2::steer::MCKinematicsReader&
     }
   }
   int tableIndex = 1;
-  for (int mccolid = 0; mccolid < mccolid_to_eventandsource.size(); ++mccolid) {
-    auto event = mccolid_to_eventandsource[mccolid].first;
-    auto source = mccolid_to_eventandsource[mccolid].second;
+  for (int mccolid = 0; mccolid < mcColToEvSrc.size(); ++mccolid) {
+    auto event = mcColToEvSrc[mccolid].first;
+    auto source = mcColToEvSrc[mccolid].second;
     std::vector<MCTrack> const& mcParticles = mcReader.getTracks(source, event);
     // mark tracks to be stored per event
     // loop over stack of MC particles from end to beginning: daughters are stored after mothers
@@ -795,12 +795,11 @@ void AODProducerWorkflowDPL::run(ProcessingContext& pc)
 
   // TODO: figure out collision weight
   // keep track event/source id for each mc-collision
-  std::vector<std::pair<int, int>> mccolid_to_eventandsource;
+  std::vector<std::pair<int, int>> mcColToEvSrc;
 
   float mcColWeight = 1.;
   // filling mcCollision table
   int index = 0;
-  int mccolindex = 0;
   for (auto& rec : mcRecords) {
     auto time = rec.getTimeNS();
     uint64_t globalBC = rec.toLong();
@@ -828,7 +827,7 @@ void AODProducerWorkflowDPL::run(ProcessingContext& pc)
                          truncateFloatFraction(time, mCollisionPosition),
                          truncateFloatFraction(mcColWeight, mCollisionPosition),
                          header.GetB());
-      mccolid_to_eventandsource.emplace_back(std::pair<int, int>(eventID, sourceID));
+      mcColToEvSrc.emplace_back(std::pair<int, int>(eventID, sourceID));
     }
     index++;
   }
@@ -873,7 +872,9 @@ void AODProducerWorkflowDPL::run(ProcessingContext& pc)
 
   // filling MC collision labels
   for (auto& label : primVerLabels) {
-    int32_t mcCollisionID = label.getEventID();
+    auto it = std::find_if(mcColToEvSrc.begin(), mcColToEvSrc.end(),
+                           [&label](const std::pair<int, int>& item) { return (item.first == label.getEventID() && item.second == label.getSourceID()); });
+    int32_t mcCollisionID = it - mcColToEvSrc.begin();
     uint16_t mcMask = 0; // todo: set mask using normalized weights?
     mcColLabelsCursor(0, mcCollisionID, mcMask);
   }
@@ -904,8 +905,7 @@ void AODProducerWorkflowDPL::run(ProcessingContext& pc)
     } else {
       LOG(FATAL) << "Error: could not find a corresponding BC ID for a collision; BC = " << globalBC << ", collisionID = " << collisionID;
     }
-    // TODO: get real collision time mask
-    int collisionTimeMask = 0;
+
     collisionsCursor(0,
                      bcID,
                      truncateFloatFraction(vertex.getX(), mCollisionPosition),
@@ -921,8 +921,7 @@ void AODProducerWorkflowDPL::run(ProcessingContext& pc)
                      truncateFloatFraction(vertex.getChi2(), mCollisionPositionCov),
                      vertex.getNContributors(),
                      truncateFloatFraction(relInteractionTime, mCollisionPosition),
-                     truncateFloatFraction(timeStamp.getTimeStampError() * 1E3, mCollisionPositionCov),
-                     collisionTimeMask);
+                     truncateFloatFraction(timeStamp.getTimeStampError() * 1E3, mCollisionPositionCov));
     auto& trackRef = primVer2TRefs[collisionID];
     // passing interaction time in [ps]
     fillTrackTablesPerCollision(collisionID, interactionTime * 1E3, trackRef, primVerGIs, recoData, tracksCursor, tracksCovCursor, tracksExtraCursor, mftTracksCursor, fwdTracksCursor, vertex);
@@ -985,7 +984,7 @@ void AODProducerWorkflowDPL::run(ProcessingContext& pc)
                        primVer2TRefs,
                        primVerGIs,
                        recoData,
-                       mccolid_to_eventandsource);
+                       mcColToEvSrc);
 
   // ------------------------------------------------------
   // filling track labels
@@ -1019,8 +1018,8 @@ void AODProducerWorkflowDPL::run(ProcessingContext& pc)
             mcMFTTrackLabelCursor(0,
                                   labelHolder.labelID,
                                   labelHolder.mftLabelMask);
-          } else {
-            if (mcTruth.isValid()) { // if not set, -1 will be stored
+          } else if (src != GIndex::Source::MCH) { // todo: implement mc labels for forward tracks and remove the placeholder
+            if (mcTruth.isValid()) {               // if not set, -1 will be stored
               labelHolder.labelID = mToStore.at(Triplet_t(mcTruth.getSourceID(), mcTruth.getEventID(), mcTruth.getTrackID()));
             }
             // treating possible mismatches for global tracks

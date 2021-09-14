@@ -21,6 +21,19 @@ For the storage optimization reason one can request multiple CTFs stored in the 
 o2-ctf-writer --min-file-size <min> --max-file-size <max> ...
 ```
 will accumulate CTFs in entries of the same tree/file until its size fits exceeds `min` and does not exceed `max` (`max` check is disabled if `max<=min`) or EOS received.
+The `--max-file-size` limit will be ignored if the very first CTF already exceeds it.
+
+The output directory (by default: `cwd`) for CTFs can be set via `--output-dir` option and must exist. Since in on the EPNs we may store the CTFs on the RAM disk of limited capacity, one can indicate the fall-back storage via `--output-dir-alt` option. The writer will switch to it if
+(i) `szCheck = max(min-file-size*1.1, max-file-size)` is positive and (ii) estimated (accounting for eventual other CTFs files written concurrently) available space on the primary storage is below the `szCheck`. The available space is estimated as:
+````
+current physically available space
+-
+number still open CTF files from concurrent writers * szCheck
++
+the current size of these files
+````
+
+Option `--ctf-dict-dir <dir>` can be provided to indicate the (existing) directory for the dictionary IO.
 
 ## CTF reader workflow
 
@@ -34,8 +47,56 @@ Example of usage:
 o2-ctf-reader-workflow --onlyDet ITS --ctf-input o2_ctf_0000000000.root  | o2-its-reco-workflow --trackerCA --clusters-from-upstream --disable-mc
 ```
 
-With `--delay <s>` a delay of `s` seconds will be introduced between injections of consecutive CTFs (if >1).
-One can loop over the input by providing `--loop <N=1>` option.
+The option are:
+```
+--ctf-input arg (=none)
+```
+inptu data (obligatort): comma-separated list of CTF  files and/or files with list of data files and/or directories containing files
+
+```
+--onlyDet arg (=all)
+```
+comma-separated list of detectors to read, Overrides skipDet
+
+```
+--skipDet arg (=none)
+```
+comma-separated list of detectors to skip
+
+```
+--max-tf arg (=-1)
+```
+max CTFs to process (<= 0 : infinite)
+
+```
+--loop arg (=0)
+```
+loop N times after the 1st pass over the data (infinite for N<0)
+
+```
+--delay arg (=0)
+```
+delay in seconds between consecutive CTFs sending (depends also on file fetching speed)
+
+```
+--copy-cmd arg (=XrdSecPROTOCOL=sss,unix xrdcp -N root://eosaliceo2.cern.ch/?src ?dst)
+```
+copy command for remote files
+
+```
+--ctf-file-regex arg (=.+o2_ctf_run.+\.root$)
+```
+regex string to identify CTF files: optional to filter data files (if the input contains directories, it will be used to avoid picking non-CTF files)
+
+```
+--remote-regex arg (=^/eos/aliceo2/.+)
+```
+regex string to identify remote files
+
+```
+--max-cached-files arg (=3)
+```
+max CTF files queued (copied for remote source).
 
 
 ## Support for externally provided encoding dictionaries

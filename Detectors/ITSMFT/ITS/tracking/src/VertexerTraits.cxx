@@ -73,7 +73,7 @@ void trackleterKernelSerial(
         // loop on clusters next layer
         for (int iNextLayerClusterIndex{firstRowClusterIndex}; iNextLayerClusterIndex < maxRowClusterIndex && iNextLayerClusterIndex < static_cast<int>(clustersNextLayer.size()); ++iNextLayerClusterIndex) {
           const Cluster& nextCluster{clustersNextLayer[iNextLayerClusterIndex]};
-          if (o2::gpu::GPUCommonMath::Abs(currentCluster.phiCoordinate - nextCluster.phiCoordinate) < phiCut) {
+          if (o2::gpu::GPUCommonMath::Abs(currentCluster.phi - nextCluster.phi) < phiCut) {
             if (storedTracklets < maxTrackletsPerCluster) {
               if (pairOfLayers == LAYER0_TO_LAYER1) {
                 Tracklets.emplace_back(iNextLayerClusterIndex, iCurrentLayerClusterIndex, nextCluster, currentCluster);
@@ -114,7 +114,7 @@ void trackletSelectionKernelSerial(
     for (int iTracklet12{offset12}; iTracklet12 < offset12 + foundTracklets12[iCurrentLayerClusterIndex]; ++iTracklet12) {
       for (int iTracklet01{offset01}; iTracklet01 < offset01 + foundTracklets01[iCurrentLayerClusterIndex]; ++iTracklet01) {
         const float deltaTanLambda{o2::gpu::GPUCommonMath::Abs(tracklets01[iTracklet01].tanLambda - tracklets12[iTracklet12].tanLambda)};
-        const float deltaPhi{o2::gpu::GPUCommonMath::Abs(tracklets01[iTracklet01].phiCoordinate - tracklets12[iTracklet12].phiCoordinate)};
+        const float deltaPhi{o2::gpu::GPUCommonMath::Abs(tracklets01[iTracklet01].phi - tracklets12[iTracklet12].phi)};
         if (deltaTanLambda < tanLambdaCut && deltaPhi < phiCut && validTracklets != maxTracklets) {
           assert(tracklets01[iTracklet01].secondClusterIndex == tracklets12[iTracklet12].firstClusterIndex);
 #ifdef _ALLOW_DEBUG_TREES_ITS_
@@ -199,7 +199,7 @@ void VertexerTraits::arrangeClusters(ROframe* event)
       }
       for (unsigned int iCluster{0}; iCluster < clustersNum; ++iCluster) {
         mClusters[iLayer].emplace_back(iLayer, mIndexTableUtils, currentLayer.at(iCluster));
-        mAverageClustersRadii[iLayer] += mClusters[iLayer].back().rCoordinate;
+        mAverageClustersRadii[iLayer] += mClusters[iLayer].back().radius;
       }
       mAverageClustersRadii[iLayer] *= 1.f / clustersNum;
 
@@ -259,8 +259,8 @@ void VertexerTraits::computeTrackletsPureMontecarlo()
     auto& currentCluster{mClusters[0][iCurrentLayerClusterIndex]};
     for (unsigned int iNextLayerClusterIndex = 0; iNextLayerClusterIndex < mClusters[1].size(); iNextLayerClusterIndex++) {
       const Cluster& nextCluster{mClusters[1][iNextLayerClusterIndex]};
-      const auto& lblNext = mEvent->getClusterLabels(1, nextCluster.clusterId);
-      const auto& lblCurr = mEvent->getClusterLabels(0, currentCluster.clusterId);
+      const auto& lblNext = *(mEvent->getClusterLabels(1, nextCluster.clusterId).begin());
+      const auto& lblCurr = *(mEvent->getClusterLabels(0, currentCluster.clusterId).begin());
       if (lblNext.compare(lblCurr) == 1 && lblCurr.getSourceID() == 0) {
         mComb01.emplace_back(iCurrentLayerClusterIndex, iNextLayerClusterIndex, currentCluster, nextCluster);
       }
@@ -271,8 +271,8 @@ void VertexerTraits::computeTrackletsPureMontecarlo()
     auto& currentCluster{mClusters[2][iCurrentLayerClusterIndex]};
     for (unsigned int iNextLayerClusterIndex = 0; iNextLayerClusterIndex < mClusters[1].size(); iNextLayerClusterIndex++) {
       const Cluster& nextCluster{mClusters[1][iNextLayerClusterIndex]};
-      const auto& lblNext = mEvent->getClusterLabels(1, nextCluster.clusterId);
-      const auto& lblCurr = mEvent->getClusterLabels(2, currentCluster.clusterId);
+      const auto& lblNext = *(mEvent->getClusterLabels(1, nextCluster.clusterId).begin());
+      const auto& lblCurr = *(mEvent->getClusterLabels(2, currentCluster.clusterId).begin());
       if (lblNext.compare(lblCurr) == 1 && lblCurr.getSourceID() == 0) {
         mComb12.emplace_back(iNextLayerClusterIndex, iCurrentLayerClusterIndex, nextCluster, currentCluster);
       }
@@ -367,8 +367,8 @@ void VertexerTraits::computeMCFiltering()
 {
   assert(mEvent != nullptr);
   for (size_t iTracklet{0}; iTracklet < mComb01.size(); ++iTracklet) {
-    const auto& lbl0 = mEvent->getClusterLabels(0, mClusters[0][mComb01[iTracklet].firstClusterIndex].clusterId);
-    const auto& lbl1 = mEvent->getClusterLabels(1, mClusters[1][mComb01[iTracklet].secondClusterIndex].clusterId);
+    const auto& lbl0 = *(mEvent->getClusterLabels(0, mClusters[0][mComb01[iTracklet].firstClusterIndex].clusterId).begin());
+    const auto& lbl1 = *(mEvent->getClusterLabels(1, mClusters[1][mComb01[iTracklet].secondClusterIndex].clusterId).begin());
     if (!(lbl0.compare(lbl1) == 1 && lbl0.getSourceID() == 0)) { // evtId && trackId && isValid
       mComb01.erase(mComb01.begin() + iTracklet);
       --iTracklet; // vector size has been decreased
@@ -376,8 +376,8 @@ void VertexerTraits::computeMCFiltering()
   }
 
   for (size_t iTracklet{0}; iTracklet < mComb12.size(); ++iTracklet) {
-    const auto& lbl1 = mEvent->getClusterLabels(1, mClusters[1][mComb12[iTracklet].firstClusterIndex].clusterId);
-    const auto& lbl2 = mEvent->getClusterLabels(2, mClusters[2][mComb12[iTracklet].secondClusterIndex].clusterId);
+    const auto& lbl1 = *(mEvent->getClusterLabels(1, mClusters[1][mComb12[iTracklet].firstClusterIndex].clusterId).begin());
+    const auto& lbl2 = *(mEvent->getClusterLabels(2, mClusters[2][mComb12[iTracklet].secondClusterIndex].clusterId).begin());
     if (!(lbl1.compare(lbl2) == 1 && lbl1.getSourceID() == 0)) { // evtId && trackId && isValid
       mComb12.erase(mComb12.begin() + iTracklet);
       --iTracklet; // vector size has been decreased
@@ -694,8 +694,8 @@ void VertexerTraits::filterTrackletsWithMC(std::vector<Tracklet>& tracklets01,
     int removed{0};
     for (size_t iTrackletIndex{0}; iTrackletIndex < indices01[iFoundTrackletIndex]; ++iTrackletIndex) {
       const size_t iTracklet{offset + iTrackletIndex};
-      const auto& lbl0 = mEvent->getClusterLabels(0, mClusters[0][tracklets01[iTracklet].firstClusterIndex].clusterId);
-      const auto& lbl1 = mEvent->getClusterLabels(1, mClusters[1][tracklets01[iTracklet].secondClusterIndex].clusterId);
+      const auto& lbl0 = *(mEvent->getClusterLabels(0, mClusters[0][tracklets01[iTracklet].firstClusterIndex].clusterId).begin());
+      const auto& lbl1 = *(mEvent->getClusterLabels(1, mClusters[1][tracklets01[iTracklet].secondClusterIndex].clusterId).begin());
       if (!(lbl0.compare(lbl1) == 1 && lbl0.getSourceID() == 0)) {
         tracklets01[iTracklet] = Tracklet();
         ++removed;
@@ -712,8 +712,8 @@ void VertexerTraits::filterTrackletsWithMC(std::vector<Tracklet>& tracklets01,
     int removed{0};
     for (size_t iTrackletIndex{0}; iTrackletIndex < indices12[iFoundTrackletIndex]; ++iTrackletIndex) {
       const size_t iTracklet{offset + iTrackletIndex};
-      const auto& lbl1 = mEvent->getClusterLabels(1, mClusters[1][tracklets12[iTracklet].firstClusterIndex].clusterId);
-      const auto& lbl2 = mEvent->getClusterLabels(2, mClusters[2][tracklets12[iTracklet].secondClusterIndex].clusterId);
+      const auto& lbl1 = *(mEvent->getClusterLabels(1, mClusters[1][tracklets12[iTracklet].firstClusterIndex].clusterId).begin());
+      const auto& lbl2 = *(mEvent->getClusterLabels(2, mClusters[2][tracklets12[iTracklet].secondClusterIndex].clusterId).begin());
       if (!(lbl1.compare(lbl2) == 1 && lbl1.getSourceID() == 0)) {
         tracklets12[iTracklet] = Tracklet();
         ++removed;
