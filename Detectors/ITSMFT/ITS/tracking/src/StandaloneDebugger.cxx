@@ -41,8 +41,8 @@ StandaloneDebugger::~StandaloneDebugger()
 // Monte carlo oracle part
 int StandaloneDebugger::getEventId(int firstClusterId, int secondClusterId, ROframe* event)
 {
-  o2::MCCompLabel lblClus0 = event->getClusterLabels(0, firstClusterId);
-  o2::MCCompLabel lblClus1 = event->getClusterLabels(1, secondClusterId);
+  o2::MCCompLabel lblClus0 = *(event->getClusterLabels(0, firstClusterId).begin());
+  o2::MCCompLabel lblClus1 = *(event->getClusterLabels(1, secondClusterId).begin());
   return lblClus0.compare(lblClus1) == 1 ? lblClus0.getEventID() : -1;
 }
 
@@ -55,15 +55,15 @@ void StandaloneDebugger::fillCombinatoricsTree(std::array<std::vector<Cluster>, 
   assert(mTreeStream != nullptr);
 
   for (auto& combination : comb01) {
-    o2::MCCompLabel lblClus0 = event->getClusterLabels(0, clusters[0][combination.firstClusterIndex].clusterId);
-    o2::MCCompLabel lblClus1 = event->getClusterLabels(1, clusters[1][combination.secondClusterIndex].clusterId);
+    o2::MCCompLabel lblClus0 = *(event->getClusterLabels(0, clusters[0][combination.firstClusterIndex].clusterId).begin());
+    o2::MCCompLabel lblClus1 = *(event->getClusterLabels(1, clusters[1][combination.secondClusterIndex].clusterId).begin());
     float c0z{clusters[0][combination.firstClusterIndex].zCoordinate};
     float c1z{clusters[1][combination.secondClusterIndex].zCoordinate};
     unsigned char isValidated{lblClus0.compare(lblClus1) == 1};
     (*mTreeStream)
       << "combinatorics01"
       << "tanLambda=" << combination.tanLambda
-      << "phi=" << combination.phiCoordinate
+      << "phi=" << combination.phi
       << "c0z=" << c0z
       << "c1z=" << c1z
       << "isValidated=" << isValidated
@@ -73,15 +73,15 @@ void StandaloneDebugger::fillCombinatoricsTree(std::array<std::vector<Cluster>, 
   }
 
   for (auto& combination : comb12) {
-    o2::MCCompLabel lblClus1 = event->getClusterLabels(1, clusters[1][combination.secondClusterIndex].clusterId);
-    o2::MCCompLabel lblClus2 = event->getClusterLabels(2, clusters[2][combination.secondClusterIndex].clusterId);
+    o2::MCCompLabel lblClus1 = *(event->getClusterLabels(1, clusters[1][combination.secondClusterIndex].clusterId).begin());
+    o2::MCCompLabel lblClus2 = *(event->getClusterLabels(2, clusters[2][combination.secondClusterIndex].clusterId).begin());
     float c1z{clusters[1][combination.firstClusterIndex].zCoordinate};
     float c2z{clusters[2][combination.secondClusterIndex].zCoordinate};
     unsigned char isValidated{lblClus1.compare(lblClus2) == 1};
     (*mTreeStream)
       << "combinatorics12"
       << "tanLambda=" << combination.tanLambda
-      << "phi=" << combination.phiCoordinate
+      << "phi=" << combination.phi
       << "c1z=" << c1z
       << "c2z=" << c2z
       << "isValidated=" << isValidated
@@ -101,11 +101,11 @@ void StandaloneDebugger::fillTrackletSelectionTree(std::array<std::vector<Cluste
   assert(mTreeStream != nullptr);
   int id = event->getROFrameId();
   for (auto& trackletPair : allowedTracklets) {
-    o2::MCCompLabel lblClus0 = event->getClusterLabels(0, clusters[0][comb01[trackletPair[0]].firstClusterIndex].clusterId);
-    o2::MCCompLabel lblClus1 = event->getClusterLabels(1, clusters[1][comb01[trackletPair[0]].secondClusterIndex].clusterId);
-    o2::MCCompLabel lblClus2 = event->getClusterLabels(2, clusters[2][comb12[trackletPair[1]].secondClusterIndex].clusterId);
+    o2::MCCompLabel lblClus0 = *(event->getClusterLabels(0, clusters[0][comb01[trackletPair[0]].firstClusterIndex].clusterId).begin());
+    o2::MCCompLabel lblClus1 = *(event->getClusterLabels(1, clusters[1][comb01[trackletPair[0]].secondClusterIndex].clusterId).begin());
+    o2::MCCompLabel lblClus2 = *(event->getClusterLabels(2, clusters[2][comb12[trackletPair[1]].secondClusterIndex].clusterId).begin());
     unsigned char isValidated{lblClus0.compare(lblClus1) == 1 && lblClus0.compare(lblClus2) == 1};
-    float deltaPhi{comb01[trackletPair[0]].phiCoordinate - comb12[trackletPair[1]].phiCoordinate};
+    float deltaPhi{comb01[trackletPair[0]].phi - comb12[trackletPair[1]].phi};
     float deltaTanLambda{comb01[trackletPair[0]].tanLambda - comb12[trackletPair[1]].tanLambda};
     mTreeStream->GetDirectory()->cd(); // in case of existing other open files
     (*mTreeStream)
@@ -115,13 +115,13 @@ void StandaloneDebugger::fillTrackletSelectionTree(std::array<std::vector<Cluste
       << "deltaPhi=" << deltaPhi
       << "isValidated=" << isValidated
       << "cluster0z=" << clusters[0][comb01[trackletPair[0]].firstClusterIndex].zCoordinate
-      << "cluster0r=" << clusters[0][comb01[trackletPair[0]].firstClusterIndex].rCoordinate
-      << "cluster0phi=" << clusters[0][comb01[trackletPair[0]].firstClusterIndex].phiCoordinate
+      << "cluster0r=" << clusters[0][comb01[trackletPair[0]].firstClusterIndex].radius
+      << "cluster0phi=" << clusters[0][comb01[trackletPair[0]].firstClusterIndex].phi
       << "cluster1z=" << clusters[1][comb01[trackletPair[0]].secondClusterIndex].zCoordinate
-      << "cluster1r=" << clusters[1][comb01[trackletPair[0]].secondClusterIndex].rCoordinate
-      << "cluster1phi=" << clusters[1][comb01[trackletPair[0]].secondClusterIndex].phiCoordinate
+      << "cluster1r=" << clusters[1][comb01[trackletPair[0]].secondClusterIndex].radius
+      << "cluster1phi=" << clusters[1][comb01[trackletPair[0]].secondClusterIndex].phi
       << "cluster2z=" << clusters[2][comb12[trackletPair[1]].secondClusterIndex].zCoordinate
-      << "cluster2r=" << clusters[2][comb12[trackletPair[1]].secondClusterIndex].rCoordinate
+      << "cluster2r=" << clusters[2][comb12[trackletPair[1]].secondClusterIndex].radius
       << "lblClus0=" << lblClus0
       << "lblClus1=" << lblClus1
       << "lblClus2=" << lblClus2

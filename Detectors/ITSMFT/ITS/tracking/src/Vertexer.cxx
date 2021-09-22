@@ -10,7 +10,7 @@
 // or submit itself to any jurisdiction.
 ///
 /// \file Vertexer.cxx
-/// \brief
+/// \author Matteo Concas mconcas@cern.ch
 ///
 
 #include "ITStracking/Vertexer.h"
@@ -30,22 +30,25 @@ namespace its
 
 Vertexer::Vertexer(VertexerTraits* traits)
 {
+  if (!traits) {
+    LOG(FATAL) << "nullptr passed to ITS vertexer construction.";
+  }
   mTraits = traits;
 }
 
-float Vertexer::clustersToVertices(ROframe& event, const bool useMc, std::ostream& timeBenchmarkOutputStream)
+float Vertexer::clustersToVertices(ROframe& event, const bool useMc, std::function<void(std::string s)> logger)
 {
   ROframe* eventptr = &event;
   float total{0.f};
-  total += evaluateTask(&Vertexer::initialiseVertexer, "Vertexer initialisation", timeBenchmarkOutputStream, eventptr);
-  total += evaluateTask(&Vertexer::findTracklets, "Tracklet finding", timeBenchmarkOutputStream);
+  total += evaluateTask(&Vertexer::initialiseVertexer, "Vertexer initialisation", logger, eventptr);
+  total += evaluateTask(&Vertexer::findTracklets, "Tracklet finding", logger);
 #ifdef _ALLOW_DEBUG_TREES_ITS_
   if (useMc) {
-    total += evaluateTask(&Vertexer::filterMCTracklets, "MC tracklets filtering", timeBenchmarkOutputStream);
+    total += evaluateTask(&Vertexer::filterMCTracklets, "MC tracklets filtering", logger);
   }
 #endif
-  total += evaluateTask(&Vertexer::validateTracklets, "Adjacent tracklets validation", timeBenchmarkOutputStream);
-  total += evaluateTask(&Vertexer::findVertices, "Vertex finding", timeBenchmarkOutputStream);
+  total += evaluateTask(&Vertexer::validateTracklets, "Adjacent tracklets validation", logger);
+  total += evaluateTask(&Vertexer::findVertices, "Vertex finding", logger);
 
   return total;
 }

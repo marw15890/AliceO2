@@ -115,6 +115,8 @@ class DigitDump : public CalibRawBase
     for (auto& digits : mDigits) {
       digits.clear();
     }
+
+    mTimeBinOccupancy.clear();
   }
 
   /// set in memory only mode
@@ -125,6 +127,10 @@ class DigitDump : public CalibRawBase
 
   /// return digits for specific sector
   std::vector<Digit>& getDigits(int sector) { return mDigits[sector]; }
+
+  /// return digit array
+  const auto& getDigits() const { return mDigits; }
+  auto& getDigits() { return mDigits; }
 
   /// directly add a digit
   void addDigit(const CRU& cru, const float signal, const int rowInSector, const int padInRow, const int timeBin)
@@ -141,6 +147,9 @@ class DigitDump : public CalibRawBase
   /// check duplicates and remove the if removeDuplicates is true
   void checkDuplicates(bool removeDuplicates = false);
 
+  /// remove digits close to the CE
+  void removeCEdigits(uint32_t removeNtimeBinsBefore = 10, uint32_t removeNtimeBinsAfter = 100, std::array<std::vector<Digit>, Sector::MAXSECTOR>* removedDigits = nullptr);
+
  private:
   std::unique_ptr<CalPad> mPedestal{}; ///< CalDet object with pedestal information
   std::unique_ptr<CalPad> mNoise{};    ///< CalDet object with noise
@@ -153,6 +162,8 @@ class DigitDump : public CalibRawBase
   std::string mPedestalAndNoiseFile{};                       ///< file name for the pedestal and nosie file
 
   std::vector<std::array<int, 3>> mPadMask; ///< coordinates of pads to skip
+
+  std::vector<size_t> mTimeBinOccupancy; ///< count digits above threshold to be able to remove the CE signal
 
   int mFirstTimeBin{0};      ///< first time bin used in analysis
   int mLastTimeBin{1000};    ///< first time bin used in analysis

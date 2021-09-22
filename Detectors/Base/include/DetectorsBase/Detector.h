@@ -35,6 +35,9 @@
 #include <type_traits>
 #include <unistd.h>
 #include <cassert>
+#include <list>
+#include <mutex>
+#include <thread>
 
 #include <fairmq/FwdDecls.h>
 
@@ -163,6 +166,12 @@ class Detector : public FairDetector
   // and to decode it
   virtual void attachHits(FairMQChannel&, FairMQParts&) = 0;
   virtual void fillHitBranch(TTree& tr, FairMQParts& parts, int& index) = 0;
+  virtual void collectHits(int eventID, FairMQParts& parts, int& index) = 0;
+  virtual void mergeHitEntriesAndFlush(int eventID,
+                                       TTree& target,
+                                       std::vector<int> const& trackoffsets,
+                                       std::vector<int> const& nprimaries,
+                                       std::vector<int> const& subevtsOrdered) = 0;
 
   // interface needed to merge together hit entries in TBranches (as used by hit merger process)
   // trackoffsets: a map giving the corresponding trackoffset to be applied to the trackID property when
@@ -388,7 +397,6 @@ class DetImpl : public o2::base::Detector
             }
             // this could be further generalized by using a policy for T
             std::copy(incomingdata->begin(), incomingdata->end(), std::back_inserter(*targetdata));
-            // adjust offset
             delete incomingdata;
             incomingdata = nullptr;
           }
@@ -411,6 +419,67 @@ class DetImpl : public o2::base::Detector
     }
   }
 
+  // this merges several entries from temporary hit buffer into
+  // into a single entry in a target TTree / same branch
+  // (assuming T is typically a vector; merging is simply done by appending)
+  template <typename T, typename L>
+  void mergeAndAdjustHits(std::string const& brname, L& hitbuffervector, TTree& target,
+                          std::vector<int> const& trackoffsets, std::vector<int> const& nprimaries,
+                          std::vector<int> const& subevtsOrdered)
+  {
+    auto entries = hitbuffervector.size();
+
+    auto targetdata = new T;  // used to collect data inside a single container
+    T* filladdress = nullptr; // pointer used for final ROOT IO
+    if (entries == 1) {
+      filladdress = hitbuffervector[0].get();
+      // nothing to do; we can directly do IO from the existing buffer
+    } else {
+      // here we need to do merging and index adjustment
+      int nprimTot = 0;
+      for (auto entry = 0; entry < entries; entry++) {
+        nprimTot += nprimaries[entry];
+      }
+      // offset for pimary track index
+      int idelta0 = 0;
+      // offset for secondary track index
+      int idelta1 = nprimTot;
+      filladdress = targetdata;
+      for (int entry = entries - 1; entry >= 0; --entry) {
+        // proceed in the order of subevent Ids
+        int index = subevtsOrdered[entry];
+        // number of primaries for this event
+        int nprim = nprimaries[index];
+        idelta1 -= nprim;
+
+        // fetch correct data item
+        auto incomingdata = hitbuffervector[index].get();
+        if (incomingdata) {
+          // fix the trackIDs for this data
+          for (auto& hit : *incomingdata) {
+            const auto oldID = hit.GetTrackID();
+            // offset depends on whether the trackis a primary or secondary
+            int offset = (oldID < nprim) ? idelta0 : idelta1;
+            hit.SetTrackID(oldID + offset);
+          }
+          // this could be further generalized by using a policy for T
+          std::copy(incomingdata->begin(), incomingdata->end(), std::back_inserter(*targetdata));
+        }
+        // adjust offsets for next subevent
+        idelta0 += nprim;
+        idelta1 += trackoffsets[index];
+      } // subevent loop
+    }
+    // fill target for this event
+    auto targetbr = o2::base::getOrMakeBranch(target, brname.c_str(), &filladdress);
+    targetbr->SetAddress(&filladdress);
+    targetbr->Fill();
+    targetbr->ResetAddress();
+    targetdata->clear();
+    hitbuffervector.clear();
+    delete targetdata;
+  }
+
   void mergeHitEntries(TTree& origin, TTree& target, std::vector<int> const& trackoffsets, std::vector<int> const& nprimaries, std::vector<int> const& subevtsOrdered) final
   {
     // loop over hit containers / different branches
@@ -425,7 +494,101 @@ class DetImpl : public o2::base::Detector
     }
   }
 
+  void mergeHitEntriesAndFlush(int eventID, TTree& target, std::vector<int> const& trackoffsets, std::vector<int> const& nprimaries, std::vector<int> const& subevtsOrdered) final
+  {
+    // loop over hit containers / different branches
+    // adjust trackID in hits on the go
+    int probe = 0;
+    using Hit_t = typename std::remove_pointer<decltype(static_cast<Det*>(this)->Det::getHits(0))>::type;
+    // remove buffered event from the hit store
+    using Collector_t = std::map<int, std::vector<std::vector<std::unique_ptr<Hit_t>>>>;
+    auto hitbufferPtr = reinterpret_cast<Collector_t*>(mHitCollectorBufferPtr);
+    auto iter = hitbufferPtr->find(eventID);
+    if (iter == hitbufferPtr->end()) {
+      LOG(ERROR) << "No buffered hits available for event " << eventID;
+      return;
+    }
+
+    std::string name = static_cast<Det*>(this)->getHitBranchNames(probe);
+    while (name.size() > 0) {
+      auto& vectorofHitBuffers = (*iter).second[probe];
+      // flushing and buffer removal is done inside here:
+      mergeAndAdjustHits<Hit_t>(name, vectorofHitBuffers, target, trackoffsets, nprimaries, subevtsOrdered);
+      // next name
+      probe++;
+      name = static_cast<Det*>(this)->getHitBranchNames(probe);
+    }
+    {
+      // std::lock_guard<std::mutex> l(mHitBufferMutex);
+      hitbufferPtr->erase(eventID);
+    }
+  }
+
  public:
+  /// Collect Hits available as incoming message (shared mem or not)
+  /// inside this process for later streaming to output. A function needed
+  /// by the hit-merger process (not for direct use by users)
+  void collectHits(int eventID, FairMQParts& parts, int& index) override
+  {
+    using Hit_t = typename std::remove_pointer<decltype(static_cast<Det*>(this)->Det::getHits(0))>::type;
+    using Collector_t = std::map<int, std::vector<std::vector<std::unique_ptr<Hit_t>>>>;
+    static Collector_t hitcollector; // note: we can't put this as member because
+    // decltype type deduction doesn't seem to work for class members; so we use a static member
+    // and will use some pointer member to communicate this data to other functions
+    mHitCollectorBufferPtr = (char*)&hitcollector;
+
+    int probe = 0;
+    bool* busy = nullptr;
+    using HitPtr_t = decltype(static_cast<Det*>(this)->Det::getHits(probe));
+    std::string name = static_cast<Det*>(this)->getHitBranchNames(probe);
+
+    auto copyToBuffer = [this, eventID](HitPtr_t hitdata, Collector_t& collectbuffer, int probe) {
+      std::vector<std::vector<std::unique_ptr<Hit_t>>>* hitvector = nullptr;
+      {
+        // we protect reading from this map by a lock
+        // since other threads might delete from the buffer at the same time
+        // std::lock_guard<std::mutex> l(mHitBufferMutex);
+        auto eventIter = collectbuffer.find(eventID);
+        if (eventIter == collectbuffer.end()) {
+          collectbuffer[eventID] = std::vector<std::vector<std::unique_ptr<Hit_t>>>();
+        }
+        hitvector = &(collectbuffer[eventID]);
+      }
+      if (probe >= hitvector->size()) {
+        hitvector->resize(probe + 1);
+      }
+      // add empty hit bucket to list for this event and probe
+      (*hitvector)[probe].emplace_back(new Hit_t());
+      // copy the data into this bucket
+      *((*hitvector)[probe].back()) = *hitdata;
+    };
+
+    while (name.size() > 0) {
+      if (!UseShm<Det>::value || !o2::utils::ShmManager::Instance().isOperational()) {
+        // for each branch name we extract/decode hits from the message parts ...
+        auto hitsptr = decodeTMessage<HitPtr_t>(parts, index++);
+        if (hitsptr) {
+          // ... and copy them to the buffer
+          copyToBuffer(hitsptr, hitcollector, probe);
+          delete hitsptr;
+        }
+      } else {
+        // for each branch name we extract/decode hits from the message parts ...
+        auto hitsptr = decodeShmMessage<HitPtr_t>(parts, index++, busy);
+        // ... and copy them to the buffer
+        copyToBuffer(hitsptr, hitcollector, probe);
+      }
+      // next name
+      probe++;
+      name = static_cast<Det*>(this)->getHitBranchNames(probe);
+    }
+    // there is only one busy flag per detector so we need to clear it only
+    // at the end (after all branches have been treated)
+    if (busy) {
+      *busy = false;
+    }
+  }
+
   void fillHitBranch(TTree& tr, FairMQParts& parts, int& index) override
   {
     int probe = 0;
@@ -576,6 +739,8 @@ class DetImpl : public o2::base::Detector
   std::vector<void*> mCachedPtr[NHITBUFFERS];
   int mCurrentBuffer = 0; // holding the current buffer information
   int mInitialized = false;
+
+  char* mHitCollectorBufferPtr = nullptr; //! pointer to hit (collector) buffer location (strictly internal)
   ClassDefOverride(DetImpl, 0);
 };
 } // namespace base

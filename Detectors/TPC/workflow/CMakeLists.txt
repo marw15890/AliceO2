@@ -26,12 +26,15 @@ o2_add_library(TPCWorkflow
                        src/CalibdEdxSpec.cxx
                        src/MIPTrackFilterSpec.cxx
                        src/LaserTrackFilterSpec.cxx
+                       src/ApplyCCDBCalibSpec.cxx
+                       src/MonitorWorkflowSpec.cxx
                TARGETVARNAME targetName
                PUBLIC_LINK_LIBRARIES O2::Framework O2::DataFormatsTPC
                                      O2::DPLUtils O2::TPCReconstruction
                                      O2::TPCCalibration O2::TPCSimulation
                                      O2::TPCQC O2::DetectorsCalibration
                                      O2::TPCReaderWorkflow
+                                     O2::TPCMonitor
                PRIVATE_LINK_LIBRARIES O2::GPUTracking # For the Zero Suppression includes
                                       O2::GPUWorkflow
            )
@@ -78,6 +81,11 @@ o2_add_executable(calib-laser-tracks
 o2_add_executable(laser-track-filter
                   COMPONENT_NAME tpc
                   SOURCES src/tpc-laser-track-filter.cxx
+                  PUBLIC_LINK_LIBRARIES O2::TPCWorkflow)
+
+o2_add_executable(apply-ccdb-calib
+                  COMPONENT_NAME tpc
+                  SOURCES src/tpc-apply-ccdb-calib.cxx
                   PUBLIC_LINK_LIBRARIES O2::TPCWorkflow)
 
 o2_add_executable(idc-integrate
@@ -156,5 +164,10 @@ o2_add_executable(digits-to-rawzs
                   COMPONENT_NAME tpc
                   PUBLIC_LINK_LIBRARIES O2::TPCBase O2::SimulationDataFormat O2::GPUO2Interface O2::GPUTracking O2::DetectorsRaw
                   SOURCES src/convertDigitsToRawZS.cxx)
+
+o2_add_executable(monitor-workflow
+                  COMPONENT_NAME tpc
+                  SOURCES src/tpc-monitor-workflow.cxx
+                  PUBLIC_LINK_LIBRARIES O2::TPCWorkflow)
 
 add_subdirectory(readers)

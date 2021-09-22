@@ -24,6 +24,8 @@
 #include "Headers/DataHeader.h"
 #include "CCDB/CcdbApi.h"
 #include "DetectorsCalibration/Utils.h"
+#include "DataFormatsParameters/GRPObject.h"
+#include "DetectorsCommonDataFormats/NameConf.h"
 
 #include "TPCQC/Clusters.h"
 #include "TPCBase/Mapper.h"
@@ -52,6 +54,7 @@ class TPCDigitDumpDevice : public o2::framework::Task
     mForceQuit = ic.options().get<bool>("force-quit");
     mCheckDuplicates = ic.options().get<bool>("check-for-duplicates");
     mRemoveDuplicates = ic.options().get<bool>("remove-duplicates");
+    mRemoveCEdigits = ic.options().get<bool>("remove-ce-digits");
 
     if (mUseOldSubspec) {
       LOGP(info, "Using old subspecification (CruId << 16) | ((LinkId + 1) << (CruEndPoint == 1 ? 8 : 0))");
@@ -59,6 +62,16 @@ class TPCDigitDumpDevice : public o2::framework::Task
 
     // set up ADC value filling
     mRawReader.createReader("");
+
+    const auto inputGRP = o2::base::NameConf::getGRPFileName();
+    const auto grp = o2::parameters::GRPObject::loadFrom(inputGRP);
+    if (grp) {
+      const auto nhbf = (int)grp->getNHBFPerTF();
+      const int lastTimeBin = nhbf * 891 / 2;
+      mDigitDump.setTimeBinRange(0, lastTimeBin);
+      LOGP(info, "Using GRP NHBF = {} to set last time bin to {}, might be overwritte via --configKeyValues", nhbf, lastTimeBin);
+    }
+
     mDigitDump.init();
     mDigitDump.setInMemoryOnly();
     const auto pedestalFile = ic.options().get<std::string>("pedestal-file");
@@ -140,6 +153,7 @@ class TPCDigitDumpDevice : public o2::framework::Task
   bool mForceQuit{false};
   bool mCheckDuplicates{false};
   bool mRemoveDuplicates{false};
+  bool mRemoveCEdigits{false};
   uint64_t mActiveSectors{0};  ///< bit mask of active sectors
   std::vector<int> mSectors{}; ///< tpc sector configuration
 
@@ -152,6 +166,11 @@ class TPCDigitDumpDevice : public o2::framework::Task
     } else {
       mDigitDump.sortDigits();
     }
+
+    if (mRemoveCEdigits) {
+      mDigitDump.removeCEdigits();
+    }
+
     for (auto isector : mSectors) {
       o2::tpc::TPCSectorHeader header{isector};
       header.activeSectors = mActiveSectors;
@@ -193,6 +212,7 @@ DataProcessorSpec getRawToDigitsSpec(int channel, const std::string inputSpec, s
       {"create-occupancy-maps", VariantType::Bool, false, {"create occupancy maps and store them to local root file for debugging"}},
       {"check-for-duplicates", VariantType::Bool, false, {"check if duplicate digits exist and only report them"}},
       {"remove-duplicates", VariantType::Bool, false, {"check if duplicate digits exist and remove them"}},
+      {"remove-ce-digits", VariantType::Bool, false, {"find CE position and remove digits around it"}},
     } // end Options
   };  // end DataProcessorSpec
 }

@@ -610,7 +610,7 @@ void displayMetrics(gui::WorkspaceGUIState& state,
           auto& label = metricInfo.metricLabels[li];
           auto& state = metricDisplayState[gmi];
           if (state.selected) {
-            selectedMetricIndex.push_back(MetricIndex{si, di, li, gmi});
+            selectedMetricIndex.emplace_back(MetricIndex{si, di, li, gmi});
           }
           gmi++;
         }
@@ -1014,8 +1014,10 @@ std::function<void(void)> getGUIDebugger(std::vector<DeviceInfo> const& infos,
 
     showTopologyNodeGraph(guiState, infos, devices, metadata, controls, metricsInfos);
 
-    AllMetricsStore metricsStore;
-    std::vector<DeviceMetricsInfo> driverMetrics{driverInfo.metrics};
+    static AllMetricsStore metricsStore;
+    static std::vector<DeviceMetricsInfo> driverMetrics{driverInfo.metrics};
+    driverMetrics.clear();
+
     metricsStore.metrics[DEVICE_METRICS] = &metricsInfos;
     metricsStore.metrics[DRIVER_METRICS] = &driverMetrics;
     metricsStore.specs[DEVICE_METRICS] = &deviceNodesInfos;
@@ -1061,6 +1063,52 @@ std::function<void(void)> getGUIDebugger(std::vector<DeviceInfo> const& infos,
       popWindowColorDueToStatus();
     }
   };
+}
+
+void updateMousePos(float x, float y)
+{
+  ImGuiIO& io = ImGui::GetIO();
+  io.MousePos = ImVec2(x, y);
+}
+
+void updateMouseButton(bool clicked)
+{
+  ImGuiIO& io = ImGui::GetIO();
+  io.MouseDown[0] = clicked;
+}
+
+void updateMouseWheel(int direction)
+{
+  ImGuiIO& io = ImGui::GetIO();
+  if (direction > 0) {
+    io.MouseWheel++;
+  } else {
+    io.MouseWheel--;
+  }
+}
+
+void updateWindowSize(int x, int y)
+{
+  ImGuiIO& io = ImGui::GetIO();
+  io.DisplaySize = ImVec2(x, y);
+}
+
+void keyDown(char key)
+{
+  ImGuiIO& io = ImGui::GetIO();
+  io.KeysDown[io.KeyMap[key]] = true;
+}
+
+void keyUp(char key)
+{
+  ImGuiIO& io = ImGui::GetIO();
+  io.KeysDown[io.KeyMap[key]] = false;
+}
+
+void charIn(char key)
+{
+  ImGuiIO& io = ImGui::GetIO();
+  io.AddInputCharacter((unsigned short)key);
 }
 
 } // namespace o2::framework::gui

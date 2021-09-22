@@ -47,6 +47,8 @@ class FEEIdConfig
   inline uint8_t getEndPointId(uint32_t linkUniqueId) const { return (linkUniqueId & 0xFF00) ? 1 : 0; }
   /// Gets the Link ID
   inline uint8_t getLinkId(uint32_t linkUniqueId) const { return ((linkUniqueId >> (8U * getEndPointId(linkUniqueId))) & 0xFF) - 1; }
+  /// Gets the FEE ID from the GBT unique ID
+  uint16_t getFEEId(uint16_t gbtUniqueId) const;
 
   std::vector<uint16_t> getConfiguredGBTUniqueIDs() const;
   std::vector<uint32_t> getConfiguredLinkUniqueIDs() const;
@@ -56,6 +58,8 @@ class FEEIdConfig
 
  private:
   bool load(const char* filename);
+  void add(uint16_t gbtUniqueId, uint8_t linkId, uint8_t epId, uint16_t cruId, uint16_t feeId);
+  void add(uint16_t gbtUniqueId, uint8_t linkId, uint8_t epId, uint16_t cruId);
 
   std::unordered_map<uint32_t, uint16_t> mLinkUniqueIdToGBTUniqueId{};       /// Correspondence between link unique ID and GBT unique Id
   std::unordered_map<uint16_t, uint16_t> mGBTUniqueIdToFeeId{};              /// Correspondence between GBT unique ID and FEE ID

@@ -10,5 +10,7 @@
 # or submit itself to any jurisdiction.
 
 add_subdirectory(Common)
+add_subdirectory(Matching)
 add_subdirectory(MCH)
 add_subdirectory(MID)
+add_subdirectory(Workflow)

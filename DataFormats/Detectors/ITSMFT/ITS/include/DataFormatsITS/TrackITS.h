@@ -18,6 +18,7 @@
 
 #include <vector>
 
+#include "GPUCommonDef.h"
 #include "ReconstructionDataFormats/Track.h"
 #include "CommonDataFormat/RangeReference.h"
 
@@ -33,6 +34,10 @@ namespace its
 
 class TrackITS : public o2::track::TrackParCov
 {
+  enum UserBits {
+    kNextROF = 1
+  };
+
   using Cluster = o2::itsmft::Cluster;
   using ClusRefs = o2::dataformats::RangeRefComp<4>;
 
@@ -40,13 +45,13 @@ class TrackITS : public o2::track::TrackParCov
   using o2::track::TrackParCov::TrackParCov; // inherit base constructors
   static constexpr int MaxClusters = 16;
 
-  TrackITS() = default;
-  TrackITS(const TrackITS& t) = default;
-  TrackITS(const o2::track::TrackParCov& parcov) : o2::track::TrackParCov{parcov} {}
-  TrackITS(const o2::track::TrackParCov& parCov, float chi2, const o2::track::TrackParCov& outer)
+  GPUdDefault() TrackITS() = default;
+  GPUdDefault() TrackITS(const TrackITS& t) = default;
+  GPUd() TrackITS(const o2::track::TrackParCov& parcov) : o2::track::TrackParCov{parcov} {}
+  GPUd() TrackITS(const o2::track::TrackParCov& parCov, float chi2, const o2::track::TrackParCov& outer)
     : o2::track::TrackParCov{parCov}, mParamOut{outer}, mChi2{chi2} {}
-  TrackITS& operator=(const TrackITS& tr) = default;
-  ~TrackITS() = default;
+  GPUdDefault() TrackITS& operator=(const TrackITS& tr) = default;
+  GPUdDefault() ~TrackITS() = default;
 
   // These functions must be provided
   bool propagate(float alpha, float x, float bz);
@@ -89,17 +94,22 @@ class TrackITS : public o2::track::TrackParCov
   o2::track::TrackParCov& getParamOut() { return mParamOut; }
   const o2::track::TrackParCov& getParamOut() const { return mParamOut; }
 
-  void setPattern(uint16_t p) { mPattern = p; }
-  int getPattern() const { return mPattern; }
+  void setPattern(uint32_t p) { mPattern = p; }
+  uint32_t getPattern() const { return mPattern; }
   bool hasHitOnLayer(int i) { return mPattern & (0x1 << i); }
+  bool isFakeOnLayer(int i) { return !(mPattern & (0x1 << (16 + i))); }
+  int getNFakeClusters();
+
+  void setNextROFbit(bool toggle = true) { setUserField((getUserField() & ~kNextROF) | (-toggle & kNextROF)); }
+  bool hasHitInNextROF() const { return getUserField() & kNextROF; }
 
  private:
   o2::track::TrackParCov mParamOut; ///< parameter at largest radius
   ClusRefs mClusRef;                ///< references on clusters
   float mChi2 = 0.;                 ///< Chi2 for this track
-  uint16_t mPattern = 0;            ///< layers pattern
+  uint32_t mPattern = 0;            ///< layers pattern
 
-  ClassDefNV(TrackITS, 4);
+  ClassDefNV(TrackITS, 5);
 };
 
 class TrackITSExt : public TrackITS
@@ -107,14 +117,23 @@ class TrackITSExt : public TrackITS
   ///< heavy version of TrackITS, with clusters embedded
  public:
   static constexpr int MaxClusters = 16; /// Prepare for overlaps and new detector configurations
-  using TrackITS::TrackITS; // inherit base constructors
+  using TrackITS::TrackITS;              // inherit base constructors
 
-  TrackITSExt(o2::track::TrackParCov&& parCov, short ncl, float chi2,
-              o2::track::TrackParCov&& outer, std::array<int, MaxClusters> cls)
+  GPUd() TrackITSExt(o2::track::TrackParCov&& parCov, short ncl, float chi2,
+                     o2::track::TrackParCov&& outer, std::array<int, MaxClusters> cls)
     : TrackITS(parCov, chi2, outer), mIndex{cls}
   {
     setNumberOfClusters(ncl);
   }
+
+  GPUd() TrackITSExt(o2::track::TrackParCov& parCov, short ncl, float chi2, std::uint32_t rof,
+                     o2::track::TrackParCov& outer, std::array<int, MaxClusters> cls)
+    : TrackITS(parCov, chi2, outer), mIndex{cls}
+  {
+    setNumberOfClusters(ncl);
+  }
+
+  GPUdDefault() TrackITSExt(const TrackITSExt& t) = default;
 
   void setClusterIndex(int l, int i)
   {
@@ -129,8 +148,16 @@ class TrackITSExt : public TrackITS
   {
     if (newCluster) {
       getClusterRefs().setEntries(getNumberOfClusters() + 1);
+      uint32_t pattern = getPattern();
+      pattern |= 0x1 << layer;
+      setPattern(pattern);
     }
     mIndex[layer] = idx;
+  }
+
+  std::array<int, MaxClusters>& getClusterIndexes()
+  {
+    return mIndex;
   }
 
  private:

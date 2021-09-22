@@ -15,6 +15,7 @@ o2_add_library(MCHWorkflow
                    src/ClusterFinderOriginalSpec.cxx
                    src/DataDecoderSpec.cxx
                    src/EntropyDecoderSpec.cxx
+                   src/TimeClusterFinderSpec.cxx
                    src/PreClusterFinderSpec.cxx
                    src/TrackReaderSpec.cxx
                    src/TrackTreeReader.cxx
@@ -28,6 +29,7 @@ o2_add_library(MCHWorkflow
                    O2::MCHCTF
                    O2::MCHClustering
                    O2::MCHPreClustering
+                   O2::MCHTimeClustering
                    O2::MCHRawCommon
                    O2::MCHRawDecoder
                )
@@ -60,6 +62,12 @@ o2_add_executable(
 o2_add_executable(
         cru-page-to-digits-workflow
         SOURCES src/cru-page-to-digits-workflow.cxx
+        COMPONENT_NAME mch
+        PUBLIC_LINK_LIBRARIES O2::MCHWorkflow)
+
+o2_add_executable(
+        digits-to-timeclusters-workflow
+        SOURCES src/digits-to-timeclusters-workflow.cxx
         COMPONENT_NAME mch
         PUBLIC_LINK_LIBRARIES O2::MCHWorkflow)
 
@@ -205,3 +213,10 @@ o2_add_executable(
         SOURCES src/TrackMCLabelFinderSpec.cxx src/tracks-mc-label-finder-workflow.cxx
         COMPONENT_NAME mch
         PUBLIC_LINK_LIBRARIES O2::Framework O2::Steer O2::DataFormatsMCH O2::MCHBase)
+
+o2_add_executable(rofs-histogrammer
+        SOURCES src/rofs-histogrammer.cxx
+        COMPONENT_NAME mch
+        PUBLIC_LINK_LIBRARIES O2::Framework O2::DataFormatsMCH)
+
+
