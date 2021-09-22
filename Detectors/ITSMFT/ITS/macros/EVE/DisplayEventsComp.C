@@ -51,28 +51,37 @@ static TGNumberEntry* gChipID;
 class Data
 {
  public:
+  void loadTF(int tf)
+  {
+    if (mClusTree)
+      mClusTree->GetEntry(tf);
+    if (mTracTree)
+      mTracTree->GetEntry(tf);
+  }
   void loadData(int entry);
   void displayData(int entry, int chip);
   int getLastEvent() const { return mLastEvent; }
-  void setRawPixelReader(std::string input)
+  void setRawPixelReader(std::string input, int tf)
   {
     auto reader = new RawPixelReader<ChipMappingITS>();
     reader->openInput(input);
+    // Skip to the TimeFrame = tf
+    // ???
     mPixelReader = reader;
-    mPixelReader->getNextChipData(mChipData);
-    mIR = mChipData.getInteractionRecord();
+    mPixelReader->setDecodeNextAuto(false);
   }
-  void setDigitPixelReader(std::string input)
+  void setDigitPixelReader(std::string input, int tf)
   {
     auto reader = new DigitPixelReader();
     reader->openInput(input, o2::detectors::DetID("ITS"));
     reader->init();
-    reader->readNextEntry();
+    // Skip to the TimeFrame = tf
+    do {
+      reader->readNextEntry();
+    } while (tf--);
     mPixelReader = reader;
-    mPixelReader->getNextChipData(mChipData);
-    mIR = mChipData.getInteractionRecord();
+    mPixelReader->setDecodeNextAuto(false);
   }
-  void setDigiTree(TTree* t) { mDigiTree = t; }
   void setClusTree(TTree* t);
   void setTracTree(TTree* t);
 
@@ -81,7 +90,6 @@ class Data
   int mLastEvent = 0;
   PixelReader* mPixelReader = nullptr;
   ChipPixelData mChipData;
-  o2::InteractionRecord mIR;
   std::vector<Digit> mDigits;
   std::vector<CompClusterExt>* mClusterBuffer = nullptr;
   gsl::span<CompClusterExt> mClusters;
@@ -95,7 +103,6 @@ class Data
   void loadClusters(int entry);
   void loadTracks(int entry);
 
-  TTree* mDigiTree = nullptr;
   TTree* mClusTree = nullptr;
   TTree* mTracTree = nullptr;
 
@@ -112,12 +119,11 @@ o2::itsmft::TopologyDictionary dict;
 
 void Data::loadDigits()
 {
-  auto ir = mChipData.getInteractionRecord();
+  mPixelReader->decodeNextTrigger();
+  auto ir = mPixelReader->getInteractionRecord();
   std::cout << "orbit/crossing: " << ' ' << ir.orbit << '/' << ir.bc << '\n';
 
-  mDigits.clear();
-
-  do {
+  while (mPixelReader->getNextChipData(mChipData)) {
     auto chipID = mChipData.getChipID();
     auto pixels = mChipData.getData();
     for (auto& pixel : pixels) {
@@ -125,11 +131,7 @@ void Data::loadDigits()
       auto row = pixel.getRowDirect();
       mDigits.emplace_back(chipID, row, col, 0);
     }
-    if (!mPixelReader->getNextChipData(mChipData))
-      return;
-    ir = mChipData.getInteractionRecord();
-  } while (mIR == ir);
-  mIR = ir;
+  }
 
   std::cout << "Number of ITSDigits: " << mDigits.size() << '\n';
 }
@@ -139,14 +141,12 @@ void Data::loadDigits(int entry)
   if (mPixelReader == nullptr)
     return;
 
+  mDigits.clear();
+
   for (; mLastEvent < entry; mLastEvent++) {
-    auto ir = mChipData.getInteractionRecord();
-    do {
-      if (!mPixelReader->getNextChipData(mChipData))
-        return;
-      ir = mChipData.getInteractionRecord();
-    } while (mIR == ir);
-    mIR = ir;
+    mPixelReader->decodeNextTrigger();
+    while (mPixelReader->getNextChipData(mChipData)) {
+    }
   }
   mLastEvent++;
   loadDigits();
@@ -160,7 +160,6 @@ void Data::setClusTree(TTree* tree)
   }
   tree->SetBranchAddress("ITSClusterComp", &mClusterBuffer);
   tree->SetBranchAddress("ITSClustersROF", &mClustersROF);
-  tree->GetEntry(0);
   mClusTree = tree;
 }
 
@@ -189,7 +188,6 @@ void Data::setTracTree(TTree* tree)
   tree->SetBranchAddress("ITSTrack", &mTrackBuffer);
   tree->SetBranchAddress("ITSTrackClusIdx", &mClIdxBuffer);
   tree->SetBranchAddress("ITSTracksROF", &mTracksROF);
-  tree->GetEntry(0);
   mTracTree = tree;
 }
 
@@ -353,7 +351,7 @@ TEveElement* Data::getEveTracks()
 
     while (nc--) {
       Int_t idx = (*mClIdxBuffer)[idxRef + nc];
-      const CompClusterExt& c = mClusters[idx];
+      const CompClusterExt& c = (*mClusterBuffer)[idx];
       auto locC = dict.getClusterCoordinates(c);
       auto id = c.getSensorID();
       const auto gloC = gman->getMatrixL2G(id) * locC;
@@ -423,7 +421,7 @@ void load(int entry, int chip)
   evdata.displayData(entry, chip);
 }
 
-void init(int entry = 0, int chip = 13,
+void init(int tf, int trigger, int chip,
           std::string digifile = "itsdigits.root",
           bool rawdata = false,
           std::string clusfile = "o2clus_its.root",
@@ -467,7 +465,7 @@ void init(int entry = 0, int chip = 13,
   auto h = new TGHorizontalFrame(frame);
   auto b = new TGTextButton(h, "PrevEvnt", "prev()");
   h->AddFrame(b);
-  gEntry = new TGNumberEntry(h, 0, 5, -1, TGNumberFormat::kNESInteger, TGNumberFormat::kNEANonNegative, TGNumberFormat::kNELLimitMinMax, 0, 10000);
+  gEntry = new TGNumberEntry(h, 0, 7, -1, TGNumberFormat::kNESInteger, TGNumberFormat::kNEANonNegative, TGNumberFormat::kNELLimitMinMax, 0, 1000000);
   gEntry->Connect("ValueSet(Long_t)", 0, 0, "load()");
   h->AddFrame(gEntry);
   b = new TGTextButton(h, "NextEvnt", "next()");
@@ -497,7 +495,7 @@ void init(int entry = 0, int chip = 13,
     if (rawfile->good()) {
       delete rawfile;
       std::cout << "Running with raw digits...\n";
-      evdata.setRawPixelReader(digifile.data());
+      evdata.setRawPixelReader(digifile.data(), tf);
     } else
       std::cerr << "\nERROR: Cannot open file: " << digifile << "\n\n";
   } else {
@@ -505,7 +503,7 @@ void init(int entry = 0, int chip = 13,
     if (file && gFile->IsOpen()) {
       file->Close();
       std::cout << "Running with MC digits...\n";
-      evdata.setDigitPixelReader(digifile.data());
+      evdata.setDigitPixelReader(digifile.data(), tf);
       //evdata.setDigiTree((TTree*)gFile->Get("o2sim"));
     } else
       std::cerr << "\nERROR: Cannot open file: " << digifile << "\n\n";
@@ -531,7 +529,9 @@ void init(int entry = 0, int chip = 13,
   std::cout << " nextChip() \t\t load the next chip within the current event \n";
   std::cout << " prevChip() \t\t load the previous chip within the current event \n";
 
-  load(entry, chip);
+  evdata.loadTF(tf);
+
+  load(trigger, chip);
   gEve->Redraw3D(kTRUE);
 }
 
@@ -586,9 +586,9 @@ void prevChip()
   loadChip(chip);
 }
 
-void DisplayEventsComp()
+void DisplayEventsComp(int tf = 0, int trigger = 0, int chip = 7)
 {
   // A dummy function with the same name as this macro
-  init(0, 7);
+  init(tf, trigger, chip);
   gEve->GetBrowser()->GetTabRight()->SetTab(1);
 }

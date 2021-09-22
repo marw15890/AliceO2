@@ -401,7 +401,7 @@ int Trap2CRU::buildDigitRawData(const int digitstartindex, const int digitendind
       data.x = adcdata[timebin];
       data.y = adcdata[timebin + 1];
       data.z = adcdata[timebin + 2];
-      data.c = 1;
+      data.c = (channel % 2 == 0) ? 0x3 : 0x2;                 // 3 for even channel 2 for odd channel
       memcpy(mRawDataPtr, (char*)&data, sizeof(DigitMCMData)); // uint32 -- 4 bytes.
       mRawDataPtr += sizeof(DigitMCMData);
       digitwordswritten++;
@@ -565,22 +565,25 @@ int Trap2CRU::writeDigitHCHeader(const int eventcount, const uint32_t linkid)
   int detector = linkid / 2;
 
   DigitHCHeader digitheader;
-  digitheader.res0 = 1;
+  DigitHCHeader1 digitheader1;
+  digitheader.res = 1;
   digitheader.side = (linkid % 2) ? 1 : 0;
   digitheader.stack = (detector % (o2::trd::constants::NLAYER * o2::trd::constants::NSTACK)) / o2::trd::constants::NLAYER;
   digitheader.layer = (detector % o2::trd::constants::NLAYER);
   digitheader.supermodule = linkid / 60;
   digitheader.numberHCW = 1; // number of additional words in th header, we are using 2 header words so 1 here.
   digitheader.minor = 42;    // my (shtm) version, not used
-  digitheader.major = 0x20;  // zero suppressed
+  digitheader.major = 0x21;  // zero suppressed and 0x1 to comply with what we see in the raw data
   digitheader.version = 1;   //new version of the header. we only have 1 version
-  digitheader.res1 = 1;
-  digitheader.ptrigcount = 1;             //TODO put something more real in here?
-  digitheader.ptrigphase = 1;             //TODO put something more real in here?
-  digitheader.bunchcrossing = eventcount; //NB this is not the same as the bunchcrossing the rdh. See RawData.h for explanation
-  digitheader.numtimebins = 30;
-  memcpy(mRawDataPtr, (char*)&digitheader, 8); // 8 because we are only using the first 2 32bit words of the header, the rest are optional.
-  mRawDataPtr += 8;
+  digitheader1.res = 1;
+  digitheader1.ptrigcount = 1;             //TODO put something more real in here?
+  digitheader1.ptrigphase = 1;             //TODO put something more real in here?
+  digitheader1.bunchcrossing = eventcount; //NB this is not the same as the bunchcrossing the rdh. See RawData.h for explanation
+  digitheader1.numtimebins = 30;
+  memcpy(mRawDataPtr, (char*)&digitheader, sizeof(DigitHCHeader)); // 8 because we are only using the first 2 32bit words of the header, the rest are optional.
+  mRawDataPtr += sizeof(DigitHCHeader);
+  memcpy(mRawDataPtr, (char*)&digitheader, sizeof(DigitHCHeader1)); // 8 because we are only using the first 2 32bit words of the header, the rest are optional.
+  mRawDataPtr += sizeof(DigitHCHeader1);
   wordswritten += 2;
   return wordswritten;
 }

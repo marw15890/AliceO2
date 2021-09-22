@@ -47,14 +47,13 @@ install(FILES CheckDigits_mft.C
               run_cmp2digit_tof.C
               compareTOFDigits.C
               compareTOFClusters.C
-              run_primary_vertexer_ITS.C
               run_rawdecoding_its.C
               run_rawdecoding_mft.C
               run_trac_ca_its.C
               run_trac_its.C
-              run_trac_alice3.C
               CreateBCPattern.C
               UploadDummyAlignment.C
+       CreateCTPOrbitResetObject.C
         DESTINATION share/macro/)
 
 # FIXME: a lot of macros that are here should really be elsewhere. Those which
@@ -297,16 +296,6 @@ o2_add_test_root_macro(compareTOFClusters.C
                        LABELS tof)
 
 # FIXME: move to subsystem dir
-o2_add_test_root_macro(run_primary_vertexer_ITS.C
-                       PUBLIC_LINK_LIBRARIES O2::DataFormatsITSMFT
-                                             O2::DataFormatsParameters
-                                             O2::GPUTracking
-                                             O2::SimulationDataFormat
-                                             O2::ITSBase O2::ITStracking
-          O2::DetectorsBase
-                       LABELS its COMPILE_ONLY)
-
-# FIXME: move to subsystem dir
 o2_add_test_root_macro(run_rawdecoding_its.C
                        PUBLIC_LINK_LIBRARIES O2::ITSMFTReconstruction
                                              O2::DataFormatsITSMFT
@@ -327,6 +316,9 @@ o2_add_test_root_macro(UploadDummyAlignment.C
                       PUBLIC_LINK_LIBRARIES O2::CCDB
                                             O2::DetectorsCommonDataFormats
                                             O2::CommonDataFormat)
+
+o2_add_test_root_macro(CreateCTPOrbitResetObject.C
+                      PUBLIC_LINK_LIBRARIES O2::CCDB)
 
 # FIXME: move to subsystem dir + check compilation o2_add_test_root_macro(
 # run_rec_ca.C PUBLIC_LINK_LIBRARIES O2::DetectorsCommonDataFormats
@@ -352,11 +344,6 @@ o2_add_test_root_macro(run_trac_its.C
                                              O2::MathUtils
                                              O2::SimulationDataFormat
                         LABELS its)
-
-# FIXME: move to subsystem dir
-o2_add_test_root_macro(run_trac_alice3.C
-                       PUBLIC_LINK_LIBRARIES O2::GPUTracking O2::ITSMFTSimulation
-                       LABELS its COMPILE_ONLY)
 
 #
 # NOTE: commented out until unit testing reenabled FIXME : re-enable or delete ?

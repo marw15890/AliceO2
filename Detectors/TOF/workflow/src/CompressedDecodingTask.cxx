@@ -27,6 +27,7 @@
 #include "Framework/Logger.h"
 #include "DetectorsRaw/RDHUtils.h"
 #include "Framework/InputRecordWalker.h"
+#include "Framework/DataRefUtils.h"
 
 using namespace o2::framework;
 
@@ -60,7 +61,8 @@ void CompressedDecodingTask::init(InitContext& ic)
 void CompressedDecodingTask::postData(ProcessingContext& pc)
 {
   mHasToBePosted = false;
-  mDecoder.FillWindows();
+  mDecoder.fillWindows();
+  mDecoder.fillDiagnosticFrequency();
 
   // send output message
   std::vector<o2::tof::Digit>* alldigits = mDecoder.getDigitPerTimeFrame();
@@ -111,6 +113,10 @@ void CompressedDecodingTask::postData(ProcessingContext& pc)
   DigitHeader& digitH = mDecoder.getDigitHeader();
   pc.outputs().snapshot(Output{o2::header::gDataOriginTOF, "DIGITHEADER", 0, Lifetime::Timeframe}, digitH);
 
+  auto diagnosticFrequency = mDecoder.getDiagnosticFrequency();
+  //diagnosticFrequency.print();
+  pc.outputs().snapshot(Output{o2::header::gDataOriginTOF, "DIAFREQ", 0, Lifetime::Timeframe}, diagnosticFrequency);
+
   mDecoder.clear();
 
   mNTF++;
@@ -123,7 +129,7 @@ void CompressedDecodingTask::run(ProcessingContext& pc)
   mTimer.Start(false);
 
   //RS set the 1st orbit of the TF from the O2 header, relying on rdhHandler is not good (in fact, the RDH might be eliminated in the derived data)
-  const auto* dh = o2::header::get<o2::header::DataHeader*>(pc.inputs().getFirstValid(true).header);
+  const auto* dh = DataRefUtils::getHeader<o2::header::DataHeader*>(pc.inputs().getFirstValid(true));
   mInitOrbit = dh->firstTForbit;
   if (!mConetMode) {
     mDecoder.setFirstIR({0, mInitOrbit});
@@ -403,6 +409,7 @@ DataProcessorSpec getCompressedDecodingSpec(const std::string& inputDesc, bool c
   outputs.emplace_back(o2::header::gDataOriginTOF, "READOUTWINDOW", 0, Lifetime::Timeframe);
   outputs.emplace_back(o2::header::gDataOriginTOF, "PATTERNS", 0, Lifetime::Timeframe);
   outputs.emplace_back(o2::header::gDataOriginTOF, "ERRORS", 0, Lifetime::Timeframe);
+  outputs.emplace_back(o2::header::gDataOriginTOF, "DIAFREQ", 0, Lifetime::Timeframe);
 
   return DataProcessorSpec{
     "tof-compressed-decoder",

@@ -28,8 +28,10 @@ struct TimesliceSlot;
 
 struct ExpirationHandler {
   using Creator = std::function<TimesliceSlot(TimesliceIndex&)>;
-  using Checker = std::function<bool(uint64_t timestamp)>;
-  using Handler = std::function<void(ServiceRegistry&, PartRef& expiredInput, uint64_t timestamp, data_matcher::VariableContext& variables)>;
+  /// Callback type to check if the record must be expired
+  using Checker = std::function<bool(ServiceRegistry&, uint64_t timestamp)>;
+  /// Callback type to actually materialise a given record
+  using Handler = std::function<void(ServiceRegistry&, PartRef& expiredInput, data_matcher::VariableContext& variables)>;
 
   RouteIndex routeIndex;
   Lifetime lifetime;

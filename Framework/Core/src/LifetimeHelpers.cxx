@@ -17,11 +17,18 @@
 #include "Framework/RawDeviceService.h"
 #include "Framework/ServiceRegistry.h"
 #include "Framework/TimesliceIndex.h"
+#include "Framework/VariableContextHelpers.h"
+#include "Framework/DataTakingContext.h"
 
 #include "Headers/DataHeader.h"
 #include "Headers/DataHeaderHelpers.h"
 #include "Headers/Stack.h"
+#include "CommonConstants/LHCConstants.h"
 #include "MemoryResources/MemoryResources.h"
+#include "CCDB/CcdbApi.h"
+#include <typeinfo>
+#include <TError.h>
+#include <TMemFile.h>
 #include <curl/curl.h>
 
 #include <fairmq/FairMQDevice.h>
@@ -91,7 +98,8 @@ ExpirationHandler::Creator LifetimeHelpers::timeDrivenCreation(std::chrono::micr
       if (index.isValid(slot) == false) {
         continue;
       }
-      if (index.getTimesliceForSlot(slot).value == current) {
+      auto& variables = index.getVariablesForSlot(slot);
+      if (VariableContextHelpers::getTimeslice(variables).value == current) {
         return TimesliceSlot{TimesliceSlot::INVALID};
       }
     }
@@ -118,19 +126,19 @@ ExpirationHandler::Creator LifetimeHelpers::timeDrivenCreation(std::chrono::micr
 
 ExpirationHandler::Checker LifetimeHelpers::expireNever()
 {
-  return [](int64_t) -> bool { return false; };
+  return [](ServiceRegistry&, int64_t) -> bool { return false; };
 }
 
 ExpirationHandler::Checker LifetimeHelpers::expireAlways()
 {
-  return [](int64_t) -> bool { return true; };
+  return [](ServiceRegistry&, int64_t) -> bool { return true; };
 }
 
 ExpirationHandler::Checker LifetimeHelpers::expireTimed(std::chrono::microseconds period)
 {
   auto start = getCurrentTime();
   auto last = std::make_shared<decltype(start)>(start);
-  return [last, period](int64_t) -> bool {
+  return [last, period](ServiceRegistry&, int64_t) -> bool {
     auto current = getCurrentTime();
     auto delta = current - *last;
     if (delta > period.count()) {
@@ -146,7 +154,23 @@ ExpirationHandler::Checker LifetimeHelpers::expireTimed(std::chrono::microsecond
 /// expires via this mechanism).
 ExpirationHandler::Handler LifetimeHelpers::doNothing()
 {
-  return [](ServiceRegistry&, PartRef& ref, uint64_t, data_matcher::VariableContext&) -> void { return; };
+  return [](ServiceRegistry&, PartRef& ref, data_matcher::VariableContext&) -> void { return; };
+}
+
+// We simply put everything
+size_t readToBuffer(void* p, size_t size, size_t nmemb, void* userdata)
+{
+  if (nmemb == 0) {
+    return 0;
+  }
+  if (size == 0) {
+    return 0;
+  }
+  std::vector<char>* buffer = (std::vector<char>*)userdata;
+  size_t oldSize = buffer->size();
+  buffer->resize(oldSize + nmemb * size);
+  memcpy(buffer->data() + oldSize, p, nmemb * size);
+  return size * nmemb;
 }
 
 // We simply put everything in a stringstream and read it afterwards.
@@ -163,6 +187,64 @@ size_t readToMessage(void* p, size_t size, size_t nmemb, void* userdata)
   buffer->resize(oldSize + nmemb * size);
   memcpy(buffer->data() + oldSize, p, nmemb * size);
   return size * nmemb;
+}
+
+ExpirationHandler::Checker
+  LifetimeHelpers::expectCTP(std::string const& serverUrl, bool waitForCTP)
+{
+  return [serverUrl, waitForCTP](ServiceRegistry& services, int64_t timestamp) -> bool {
+    auto& dataTakingContext = services.get<DataTakingContext>();
+    if (waitForCTP == false || dataTakingContext.source == OrbitResetTimeSource::CTP) {
+      return true;
+    }
+    LOG(INFO) << "CTP is not there, fetching.";
+    std::vector<char> buffer;
+    CURL* curl = curl_easy_init();
+    if (curl == nullptr) {
+      throw runtime_error("fetchFromCCDBCache: Unable to initialise CURL");
+    }
+    CURLcode res;
+    std::string path = "CTP/OrbitReset";
+    auto url = fmt::format("{}/{}/{}", serverUrl, path, timestamp / 1000);
+    LOG(INFO) << "Fetching CTP from " << url;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, readToBuffer);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, true);
+
+    res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+      throw runtime_error_f("Unable to fetch %s from CCDB", url.c_str());
+    }
+    long responseCode;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &responseCode);
+
+    if (responseCode != 200) {
+      throw runtime_error_f("HTTP error %d while fetching %s from CCDB", responseCode, url.c_str());
+    }
+
+    curl_easy_cleanup(curl);
+
+    Int_t previousErrorLevel = gErrorIgnoreLevel;
+    gErrorIgnoreLevel = kFatal;
+    TMemFile memFile("name", const_cast<char*>(buffer.data()), buffer.size(), "READ");
+    gErrorIgnoreLevel = previousErrorLevel;
+    if (memFile.IsZombie()) {
+      return false;
+    }
+    TClass* tcl = TClass::GetClass(typeid(std::vector<Long64_t>));
+    void* result = ccdb::CcdbApi::extractFromTFile(memFile, tcl);
+    if (!result) {
+      throw runtime_error_f("Couldn't retrieve object corresponding to %s from TFile", tcl->GetName());
+    }
+    memFile.Close();
+    std::vector<Long64_t>* ctp = (std::vector<Long64_t>*)result;
+    LOG(INFO) << "Orbit reset time now at " << (*ctp)[0];
+    dataTakingContext.orbitResetTime = (*ctp)[0];
+    dataTakingContext.source = OrbitResetTimeSource::CTP;
+    return true;
+  };
 }
 
 /// Fetch an object from CCDB if the record is expired. The actual
@@ -191,12 +273,14 @@ ExpirationHandler::Handler
   if (matcher == nullptr) {
     throw runtime_error("InputSpec for Conditions must be fully qualified");
   }
-  return [spec, matcher, sourceChannel, serverUrl = prefix, overrideTimestampMilliseconds](ServiceRegistry& services, PartRef& ref, uint64_t timestamp, data_matcher::VariableContext&) -> void {
+  return [spec, matcher, sourceChannel, serverUrl = prefix, overrideTimestampMilliseconds](ServiceRegistry& services, PartRef& ref, data_matcher::VariableContext& variables) -> void {
     // We should invoke the handler only once.
     assert(!ref.header);
     assert(!ref.payload);
 
     auto& rawDeviceService = services.get<RawDeviceService>();
+    auto& dataTakingContext = services.get<DataTakingContext>();
+
     auto&& transport = rawDeviceService.device()->GetChannel(sourceChannel, 0).Transport();
     auto channelAlloc = o2::pmr::getTransportAllocator(transport);
     o2::vector<char> payloadBuffer{transport->GetMemoryResource()};
@@ -207,8 +291,20 @@ ExpirationHandler::Handler
       throw runtime_error("fetchFromCCDBCache: Unable to initialise CURL");
     }
     CURLcode res;
+
+    // * By default we use the time when the data was created.
+    // * If an override is specified, we use it.
+    // * If the orbit reset time comes from CTP, we use it for precise
+    //   timestamp evaluation via the firstTFOrbit
+    uint64_t timestamp = -1;
     if (overrideTimestampMilliseconds) {
       timestamp = overrideTimestampMilliseconds;
+    } else if (dataTakingContext.source == OrbitResetTimeSource::CTP) {
+      // Orbit reset time is in microseconds, LHCOrbitNS is in nanoseconds, CCDB uses milliseconds
+      timestamp = ceilf((VariableContextHelpers::getFirstTFOrbit(variables) * o2::constants::lhc::LHCOrbitNS / 1000 + dataTakingContext.orbitResetTime) / 1000);
+    } else {
+      // The timestamp used by DPL is in nanoseconds
+      timestamp = ceilf(VariableContextHelpers::getTimeslice(variables).value / 1000);
     }
 
     std::string path = "";
@@ -220,7 +316,7 @@ ExpirationHandler::Handler
     if (path.empty()) {
       path = fmt::format("{}/{}", matcher->origin, matcher->description);
     }
-    auto url = fmt::format("{}/{}/{}", serverUrl, path, timestamp / 1000);
+    auto url = fmt::format("{}/{}/{}", serverUrl, path, timestamp);
     LOG(INFO) << "fetchFromCCDBCache: Fetching " << url;
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
@@ -268,7 +364,7 @@ ExpirationHandler::Handler
 /// FIXME: provide a way to customise the histogram from the configuration.
 ExpirationHandler::Handler LifetimeHelpers::fetchFromQARegistry()
 {
-  return [](ServiceRegistry&, PartRef& ref, uint64_t, data_matcher::VariableContext&) -> void {
+  return [](ServiceRegistry&, PartRef& ref, data_matcher::VariableContext&) -> void {
     throw runtime_error("fetchFromQARegistry: Not yet implemented");
     return;
   };
@@ -279,7 +375,7 @@ ExpirationHandler::Handler LifetimeHelpers::fetchFromQARegistry()
 /// FIXME: provide a way to customise the histogram from the configuration.
 ExpirationHandler::Handler LifetimeHelpers::fetchFromObjectRegistry()
 {
-  return [](ServiceRegistry&, PartRef& ref, uint64_t, data_matcher::VariableContext&) -> void {
+  return [](ServiceRegistry&, PartRef& ref, data_matcher::VariableContext&) -> void {
     throw runtime_error("fetchFromObjectRegistry: Not yet implemented");
     return;
   };
@@ -291,12 +387,13 @@ ExpirationHandler::Handler LifetimeHelpers::enumerate(ConcreteDataMatcher const&
 {
   using counter_t = int64_t;
   auto counter = std::make_shared<counter_t>(0);
-  return [matcher, counter, sourceChannel, orbitOffset, orbitMultiplier](ServiceRegistry& services, PartRef& ref, uint64_t timestamp, data_matcher::VariableContext& variables) -> void {
+  return [matcher, counter, sourceChannel, orbitOffset, orbitMultiplier](ServiceRegistry& services, PartRef& ref, data_matcher::VariableContext& variables) -> void {
     // We should invoke the handler only once.
     assert(!ref.header);
     assert(!ref.payload);
     auto& rawDeviceService = services.get<RawDeviceService>();
 
+    auto timestamp = VariableContextHelpers::getTimeslice(variables).value;
     DataHeader dh;
     dh.dataOrigin = matcher.origin;
     dh.dataDescription = matcher.description;
@@ -327,12 +424,13 @@ ExpirationHandler::Handler LifetimeHelpers::dummy(ConcreteDataMatcher const& mat
 {
   using counter_t = int64_t;
   auto counter = std::make_shared<counter_t>(0);
-  auto f = [matcher, counter, sourceChannel](ServiceRegistry& services, PartRef& ref, uint64_t timestamp, data_matcher::VariableContext& variables) -> void {
+  auto f = [matcher, counter, sourceChannel](ServiceRegistry& services, PartRef& ref, data_matcher::VariableContext& variables) -> void {
     // We should invoke the handler only once.
     assert(!ref.header);
     assert(!ref.payload);
     auto& rawDeviceService = services.get<RawDeviceService>();
 
+    auto timestamp = VariableContextHelpers::getTimeslice(variables).value;
     DataHeader dh;
     dh.dataOrigin = matcher.origin;
     dh.dataDescription = matcher.description;

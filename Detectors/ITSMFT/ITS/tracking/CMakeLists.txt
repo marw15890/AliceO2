@@ -14,6 +14,7 @@ o2_add_library(ITStracking
                SOURCES src/ClusterLines.cxx
                        src/Cluster.cxx
                        src/ROframe.cxx
+                       src/TimeFrame.cxx
                        src/IOUtils.cxx
                        src/Label.cxx
                        src/PrimaryVertexContext.cxx
@@ -25,6 +26,7 @@ o2_add_library(ITStracking
                        src/ClusterLines.cxx
                        src/Vertexer.cxx
                        src/VertexerTraits.cxx
+                       src/Smoother.cxx
                PUBLIC_LINK_LIBRARIES O2::GPUCommon
                                      Microsoft.GSL::GSL
                                      O2::CommonConstants
@@ -41,11 +43,6 @@ o2_target_root_dictionary(ITStracking
                                   include/ITStracking/StandaloneDebugger.h
                           LINKDEF src/TrackingLinkDef.h)
 
-if(CUDA_ENABLED)
-  add_subdirectory(cuda)
-  target_compile_definitions(${targetName} PRIVATE CUDA_ENABLED)
-endif()
-if(HIP_ENABLED)
-  add_subdirectory(hip)
-  target_compile_definitions(${targetName} PRIVATE HIP_ENABLED)
+if(CUDA_ENABLED OR HIP_ENABLED)
+  add_subdirectory(GPU)
 endif()

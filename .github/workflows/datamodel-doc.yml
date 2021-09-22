@@ -6,6 +6,7 @@ on:
 jobs:
   datamodel-doc:
     runs-on: ubuntu-latest
+    if: github.repository == 'AliceO2Group/AliceO2'
     steps:
 
       - name: Checkout O2
@@ -27,6 +28,8 @@ jobs:
           repository: AliceO2Group/analysis-framework
           path: analysis-framework
           persist-credentials: false
+          # To push the updated branch, we need a non-shallow clone.
+          fetch-depth: 0
 
       - name: Create PR branch in docs
         working-directory: analysis-framework

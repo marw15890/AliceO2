@@ -13,6 +13,8 @@
 #define ALICEO2_TOF_GEO_H
 
 #include "Rtypes.h"
+#include <array>
+#include <vector>
 #include "CommonConstants/LHCConstants.h"
 //#include "DetectorsRaw/HBFUtils.h"
 
@@ -28,8 +30,38 @@ class Geo
  public:
   //  static void updateNSinTF() { NS_IN_TF = o2::constants::lhc::LHCOrbitNS * o2::raw::HBFUtils::getNOrbitsPerTF(); }
 
+  // FLP <-> CRU <-> LINKS mapping
+  static Int_t getCRU(int link)
+  {
+    return CRUFROMLINK[link];
+  }
+  static Int_t getCRUlink(int link)
+  {
+    return CRULINK[link];
+  }
+  static Int_t getCRUendpoint(int link)
+  {
+    return CRUENDPOINT[link];
+  }
+  static Int_t getCONETlink(int link) { return (link % 4); }
+  static Int_t getCRUid(int link)
+  {
+    return CRUID[CRUFROMLINK[link]];
+  }
+  static Int_t getCRUid(int iflp, int icru) { return CRUFROMFLP[iflp][icru]; }
+  static Int_t getFLPid(int link)
+  {
+    return FLPFROMCRU[CRUFROMLINK[link]];
+  }
+  static Int_t getFEEid(int link)
+  {
+    return FEEID[link];
+  }
+  static Int_t getFLP(int iflp) { return FLP[iflp]; }
+
   // From AliTOFGeometry
   static void translate(Float_t* xyz, Float_t translationVector[3]);
+  static void translate(Float_t& x, Float_t& y, Float_t& z, Float_t translationVector[3]);
   static void rotate(Float_t* xyz, Double_t rotationAngles[6]);
 
   static void rotateToSector(Float_t* xyz, Int_t isector);
@@ -49,7 +81,7 @@ class Geo
   static Float_t getAngles(Int_t iplate, Int_t istrip) { return ANGLES[iplate][istrip]; }
   static Float_t getHeights(Int_t iplate, Int_t istrip) { return HEIGHTS[iplate][istrip]; }
   static Float_t getDistances(Int_t iplate, Int_t istrip) { return DISTANCES[iplate][istrip]; }
-  static void getPadDxDyDz(const Float_t* pos, Int_t* det, Float_t* DeltaPos);
+  static void getPadDxDyDz(const Float_t* pos, Int_t* det, Float_t* DeltaPos, int sector = -1);
   enum {
     // DAQ characteristics
     // cfr. TOF-TDR pag. 105 for Glossary
@@ -71,13 +103,16 @@ class Geo
   static constexpr int BC_IN_ORBIT = o2::constants::lhc::LHCMaxBunches;     // N. bunch crossing in 1 orbit
 
   static constexpr Int_t NPADX = 48;
+  static constexpr Float_t NPADX_INV_INT = 1. / NPADX;
   static constexpr Int_t NPADZ = 2;
   static constexpr Int_t NPADS = NPADX * NPADZ;
+  static constexpr Float_t NPADS_INV_INT = 1. / NPADS;
   static constexpr Int_t NSTRIPA = 15;
   static constexpr Int_t NSTRIPB = 19;
   static constexpr Int_t NSTRIPC = 19;
   static constexpr Int_t NMAXNSTRIP = 20;
   static constexpr Int_t NSTRIPXSECTOR = NSTRIPA + 2 * NSTRIPB + 2 * NSTRIPC;
+  static constexpr Float_t NSTRIPXSECTOR_INV_INT = 1. / NSTRIPXSECTOR;
   static constexpr Int_t NPADSXSECTOR = NSTRIPXSECTOR * NPADS;
 
   static constexpr Int_t NSECTORS = 18;
@@ -107,6 +142,7 @@ class Geo
   static constexpr Float_t SIGMAFORTAIL12 = 0.5; // Sig2 for simulation of TDC tails
 
   static constexpr Float_t PHISEC = 20; // sector Phi width (deg)
+  static constexpr Float_t PHISECINV = 1. / PHISEC; // sector Phi width (deg)
 
   static constexpr Float_t TDCBIN = o2::constants::lhc::LHCBunchSpacingNS * 1E3 / 1024; ///< TDC bin width [ps]
   static constexpr Float_t NTDCBIN_PER_PS = 1. / TDCBIN;     ///< number of TDC bins in 1 ns
@@ -134,6 +170,35 @@ class Geo
   static constexpr Double_t LATENCYWINDOW = LATENCYWINDOW_IN_BC * o2::constants::lhc::LHCBunchSpacingNS;   // Latency window  in ns
   static constexpr Double_t MATCHINGWINDOW = MATCHINGWINDOW_IN_BC * o2::constants::lhc::LHCBunchSpacingNS; // Matching window  in ns
   static constexpr Double_t WINDOWOVERLAP = MATCHINGWINDOW - READOUTWINDOW;                                // overlap between two consecutive matchingwindow
+
+  static constexpr Int_t CRUFROMLINK[kNCrate] = {
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+
+  static constexpr Int_t FEEID[kNCrate] = {
+    327680, 327681, 327682, 327683, 327684, 327685, 327686, 327687, 327688, 327689, 327690, 327691, 327692, 327693, 327694, 327695, 327696, 327697,
+    327698, 327699, 327700, 327701, 327702, 327703, 327704, 327705, 327706, 327707, 327708, 327709, 327710, 327711, 327712, 327713, 327714, 327715,
+    327716, 327717, 327718, 327719, 327720, 327721, 327722, 327723, 327724, 327725, 327726, 327727, 327728, 327729, 327730, 327731, 327732, 327733,
+    327734, 327735, 327736, 327737, 327738, 327739, 327740, 327741, 327742, 327743, 327744, 327745, 327746, 327747, 327748, 327749, 327750, 327751};
+
+  static constexpr Int_t FLP[2] = {178, 179};
+  static constexpr Int_t CRUFROMFLP[2][2] = {{227, 228}, {225, 226}};
+  static constexpr Int_t FLPFROMCRU[4] = {179, 179, 178, 178};
+  static constexpr Int_t CRUID[4] = {225, 226, 227, 228};
+
+  static constexpr Int_t CRULINK[kNCrate] = {
+    11, 10, 0, 1, 9, 8, 2, 3, 7, 6, 4, 5, 5, 4, 6, 7, 3, 2,
+    3, 9, 11, 10, 0, 1, 9, 8, 2, 3, 7, 6, 4, 5, 5, 4, 6, 7,
+    11, 10, 0, 1, 9, 8, 2, 3, 7, 6, 4, 5, 5, 4, 6, 7, 3, 2,
+    8, 9, 11, 10, 0, 1, 9, 8, 2, 3, 7, 6, 4, 5, 5, 4, 6, 7};
+
+  static constexpr Int_t CRUENDPOINT[kNCrate] = {
+    0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0,
+    0, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1,
+    0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0,
+    1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1};
 
   static constexpr Float_t ANGLES[NPLATES][NMAXNSTRIP] = { // Strip Tilt Angles
     {43.99, 43.20, 42.40, 41.59, 40.77, 39.94, 39.11, 38.25, 37.40, 36.53,
@@ -281,6 +346,7 @@ class Geo
   static Int_t getCHFromECH(int echan) { return ELCHAN_TO_CHAN[echan]; }
 
   static void Init();
+  static void InitIndices();
 
  private:
   static Int_t getSector(const Float_t* pos);
@@ -295,6 +361,9 @@ class Geo
   static Float_t mRotationMatrixSector[NSECTORS + 1][3][3]; // rotation matrixes
   static Float_t mRotationMatrixPlateStrip[NPLATES][NMAXNSTRIP][3][3];
   static Float_t mPadPosition[NSECTORS][NPLATES][NMAXNSTRIP][NPADZ][NPADX][3];
+  static Int_t mPlate[NSTRIPXSECTOR];
+  static Int_t mStripInPlate[NSTRIPXSECTOR];
+  static std::array<std::vector<float>, 5> mDistances;
 
   // cable length map
   static constexpr Float_t CABLEPROPAGATIONDELAY = 0.0513;           // Propagation delay [ns/cm]
@@ -302,7 +371,7 @@ class Geo
   static const Int_t CHAN_TO_ELCHAN[NCHANNELS];
   static const Int_t ELCHAN_TO_CHAN[N_ELECTRONIC_CHANNELS];
 
-  ClassDefNV(Geo, 1);
+  ClassDefNV(Geo, 2);
 };
 } // namespace tof
 } // namespace o2

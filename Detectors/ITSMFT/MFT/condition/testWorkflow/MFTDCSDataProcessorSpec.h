@@ -75,7 +75,7 @@ class MFTDCSDataProcessor : public o2::framework::Task
       CcdbApi api;
       api.init(mgr.getURL());
       long ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-      std::unordered_map<DPID, std::string>* dpid2DataDesc = mgr.getForTimeStamp<std::unordered_map<DPID, std::string>>("TOF/DCSconfig", ts);
+      std::unordered_map<DPID, std::string>* dpid2DataDesc = mgr.getForTimeStamp<std::unordered_map<DPID, std::string>>("MFT/DCSconfig", ts);
       for (auto& i : *dpid2DataDesc) {
         vect.push_back(i.first);
       }
@@ -83,9 +83,11 @@ class MFTDCSDataProcessor : public o2::framework::Task
 
     else {
       LOG(INFO) << "Configuring via hardcoded strings";
-      std::vector<std::string> aliases = {"mft_main:MFT_PSU_Zone/H[0..1]D[0..4]F[0..1]Z[0..3].Monitoirng.Current.Analog",
-                                          "mft_main:MFT_PSU_Zone/H[0..1]D[0..4]F[0..1]Z[0..3].Monitoirng.Current.Digital",
-                                          "mft_main:MFT_PSU_Zone/H[0..1]D[0..4]F[0..1]Z[0..3].Monitoirng.Current.BackBias"};
+      std::vector<std::string> aliases = {"mft_main/MFT_PSU_Zone/H[0..1]D[0..4]F[0..1]Z[0..3]/Monitoring/Current/Analog",
+                                          "mft_main/MFT_PSU_Zone/H[0..1]D[0..4]F[0..1]Z[0..3]/Monitoring/Current/Digital",
+                                          "mft_main/MFT_PSU_Zone/H[0..1]D[0..4]F[0..1]Z[0..3]/Monitoring/Current/BackBias",
+                                          "mft_main/MFT_PSU_Zone/H[0..1]D[0..4]F[0..1]Z[0..3]/Monitoring/Voltage/BackBias"};
+
       std::vector<std::string> expaliases = o2::dcs::expandAliases(aliases);
       for (const auto& i : expaliases) {
         vect.emplace_back(i, o2::dcs::RAW_DOUBLE);
