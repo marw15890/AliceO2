@@ -11,7 +11,6 @@
 
 #ifndef ALICEO2_ITSMFT_ALPIDE_CODER_H
 #define ALICEO2_ITSMFT_ALPIDE_CODER_H
-
 #include <Rtypes.h>
 #include <cstdio>
 #include <cstdint>
@@ -74,6 +73,7 @@ class AlpideCoder
   static constexpr uint32_t ExpectData = 0x1 << 4;
   static constexpr uint32_t ExpectBUSY = 0x1 << 5;
   static constexpr int NRows = 512;
+  static constexpr int RowMask = NRows - 1;
   static constexpr int NCols = 1024;
   static constexpr int NRegions = 32;
   static constexpr int NDColInReg = NCols / NRegions / 2;
@@ -124,6 +124,18 @@ class AlpideCoder
     // read record for single non-empty chip, updating on change module and cycle.
     // return number of records filled (>0), EOFFlag or Error
     //
+    auto roErrHandler = [&chipData](uint8_t roErr) {
+#ifdef ALPIDE_DECODING_STAT
+      if (roErr == MaskErrBusyViolation) {
+        chipData.setError(ChipStat::BusyViolation);
+      } else if (roErr == MaskErrDataOverrun) {
+        chipData.setError(ChipStat::DataOverrun);
+      } else if (roErr == MaskErrFatal) {
+        chipData.setError(ChipStat::Fatal);
+      }
+#endif
+    };
+
     uint8_t dataC = 0, timestamp = 0;
     uint16_t dataS = 0, region = 0;
 #ifdef ALPIDE_DECODING_STAT
@@ -137,7 +149,6 @@ class AlpideCoder
     uint32_t expectInp = ExpectChipHeader | ExpectChipEmpty; // data must always start with chip header or chip empty flag
 
     chipData.clear();
-
     while (buffer.next(dataC)) {
       //
       // ---------- chip info ?
@@ -151,6 +162,7 @@ class AlpideCoder
 #endif
           return unexpectedEOF("CHIP_EMPTY:Timestamp");
         }
+        chipData.resetChipID();
         expectInp = ExpectChipHeader | ExpectChipEmpty;
         continue;
       }
@@ -180,13 +192,7 @@ class AlpideCoder
 #ifdef ALPIDE_DECODING_STAT
         uint8_t roErr = dataC & MaskROFlags;
         if (roErr) {
-          if (roErr == MaskErrBusyViolation) {
-            chipData.setError(ChipStat::BusyViolation);
-          } else if (roErr == MaskErrDataOverrun) {
-            chipData.setError(ChipStat::DataOverrun);
-          } else if (roErr == MaskErrFatal) {
-            chipData.setError(ChipStat::Fatal);
-          }
+          roErrHandler(roErr);
         }
 #endif
         // in case there are entries in the "right" columns buffer, add them to the container
@@ -196,6 +202,7 @@ class AlpideCoder
             addHit(chipData, rightColHits[ihr], colDPrev);
           }
         }
+
         if (!chipData.getData().size() && !chipData.isErrorSet()) {
           nRightCHits = 0;
           colDPrev = 0xffff;
@@ -225,7 +232,7 @@ class AlpideCoder
           uint16_t row = pixID >> 1;
           // abs id of left column in double column
           uint16_t colD = (region * NDColInReg + dColID) << 1; // TODO consider <<4 instead of *NDColInReg?
-
+          bool rightC = (row & 0x1) ? !(pixID & 0x1) : (pixID & 0x1); // true for right column / lalse for left
           // if we start new double column, transfer the hits accumulated in the right column buffer of prev. double column
           if (colD != colDPrev) {
             colDPrev++;
@@ -240,6 +247,7 @@ class AlpideCoder
           // this is a special test to exclude repeated data of the same pixel fired
           else if (row == rowPrev) { // same row/column fired repeatedly, hope this check is temporary
             chipData.setError(ChipStat::RepeatingPixel);
+            chipData.addErrorInfo((uint64_t(colD + rightC) << 16) | uint64_t(row));
             if ((dataS & (~MaskDColID)) == DATALONG) { // skip pattern w/o decoding
               uint8_t hitsPattern = 0;
               if (!buffer.next(hitsPattern)) {
@@ -256,7 +264,6 @@ class AlpideCoder
             rowPrev = row;
 #endif
           }
-          bool rightC = (row & 0x1) ? !(pixID & 0x1) : (pixID & 0x1); // true for right column / lalse for left
 
           // we want to have hits sorted in column/row, so the hits in right column of given double column
           // are first collected in the temporary buffer
@@ -275,14 +282,21 @@ class AlpideCoder
 #endif
               return unexpectedEOF("CHIP_DATA_LONG:Pattern");
             }
-#ifdef ALPIDE_DECODING_STAT
             if (hitsPattern & (~MaskHitMap)) {
+#ifdef ALPIDE_DECODING_STAT
               chipData.setError(ChipStat::WrongDataLongPattern);
-            }
 #endif
+              return unexpectedEOF("CHIP_DATA_LONG:Pattern");
+            }
             for (int ip = 0; ip < HitMapSize; ip++) {
               if (hitsPattern & (0x1 << ip)) {
                 uint16_t addr = pixID + ip + 1, rowE = addr >> 1;
+                if (addr & ~MaskPixID) {
+#ifdef ALPIDE_DECODING_STAT
+                  chipData.setError(ChipStat::WrongRow);
+#endif
+                  return unexpectedEOF(fmt::format("Non-existing encoder {} decoded, DataLong was {:x}", pixID, dataS));
+                }
                 rightC = ((rowE & 0x1) ? !(addr & 0x1) : (addr & 0x1)); // true for right column / lalse for left
                 // the real columnt is int colE = colD + rightC;
                 if (rightC) { // same as above
@@ -320,8 +334,44 @@ class AlpideCoder
         buffer.clear(); // 0 padding reached (end of the cable data), no point in continuing
         break;
       }
+
+      // in case of BUSY VIOLATION the Trailer may come directly after the Header
+      if ((expectInp & ExpectRegion) && (dataCM == CHIPTRAILER) && (dataC & MaskROFlags)) {
+        expectInp = ExpectChipHeader | ExpectChipEmpty;
+        chipData.setROFlags(dataC & MaskROFlags);
+        roErrHandler(dataC & MaskROFlags);
+        break;
+      }
+
+      // check for APE errors, see https://alice.its.cern.ch/jira/browse/O2-1717?focusedCommentId=274714&page=com.atlassian.jira.plugin.system.issuetabpanels:comment-tabpanel#comment-274714
+      bool fatalAPE = false;
+      auto codeAPE = ChipStat::getAPECode(dataC, fatalAPE);
+      if (codeAPE >= 0) {
+#ifdef ALPIDE_DECODING_STAT
+        chipData.setError(ChipStat::DecErrors(codeAPE));
+#endif
+        if (fatalAPE) {
+          buffer.clear(); // no point in contiunuing with this cable data
+        } else {          // skip eventual padding
+          while (buffer.next(dataC)) {
+            if (dataC) { // padding is over, make 1 step back in the buffer
+              auto currPtr = buffer.getPtr();
+              buffer.setPtr(--currPtr);
+            }
+          }
+        }
+        return unexpectedEOF(fmt::format("APE error {:#02x} [expectation = 0x{:#02x}]", int(dataC), int(expectInp)));
+      }
 #ifdef ALPIDE_DECODING_STAT
       chipData.setError(ChipStat::UnknownWord);
+      // fill the error buffer with a few bytes of wrong data
+      const uint8_t* begPtr = buffer.data();
+      const uint8_t* endPtr = buffer.getEnd();
+      const uint8_t* curPtr = buffer.getPtr();
+      size_t offsBack = std::min(ChipPixelData::MAXDATAERRBYTES - ChipPixelData::MAXDATAERRBYTES_AFTER, size_t(curPtr - begPtr));
+      size_t offsAfter = std::min(ChipPixelData::MAXDATAERRBYTES_AFTER, size_t(endPtr - curPtr));
+      std::memcpy(chipData.getRawErrBuff().data(), curPtr - offsBack, offsBack + offsAfter);
+      chipData.setNBytesInRawBuff(offsBack + offsAfter);
 #endif
       return unexpectedEOF(fmt::format("Unknown word 0x{:x} [expectation = 0x{:x}]", int(dataC), int(expectInp))); // error
     }

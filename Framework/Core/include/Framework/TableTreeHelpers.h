@@ -22,122 +22,122 @@ namespace o2::framework
 {
 
 // -----------------------------------------------------------------------------
-// TableToTree allows to save the contents of a given arrow::Table to a TTree
-//  BranchIterator is used by TableToTree
+// TableToTree allows to save the contents of a given arrow::Table into
+// a TTree
+// ColumnToBranch is used by GenericTableToTree
 //
 // To write the contents of a table ta to a tree tr on file f do:
-//  . TableToTree t2t(ta,f,treename);
-//  . t2t.addBranch(coumn1); t2t.addBranch(coumn1); ...
-//    OR
-//    t2t.addAllBranches();
+//  . GenericTableToTree t2t(ta, f,treename);
+//  . t2t.addBranches();
+//    OR t2t.addBranch(column.get(), field.get()), ...;
 //  . t2t.process();
 //
 // .............................................................................
-class BranchIterator
+// -----------------------------------------------------------------------------
+// TreeToTable allows to fill the contents of a given TTree to an arrow::Table
+//  ColumnIterator is used by TreeToTable
+//
+// To copy the contents of a tree tr to a table ta do:
+//  . TreeToTable t2t(tr);
+//  . t2t.addColumn(columnname1); t2t.addColumn(columnname2); ...
+//    OR
+//    t2t.addAllColumns();
+//  . auto ta = t2t.process();
+//
+// .............................................................................
+struct ROOTTypeInfo {
+  EDataType type;
+  char suffix[3];
+  int size;
+};
+
+auto arrowTypeFromROOT(EDataType type, int size);
+auto basicROOTTypeFromArrow(arrow::Type::type id);
+
+class BranchToColumn
 {
+ public:
+  BranchToColumn(TBranch* branch, const char* name, EDataType type, int listSize, arrow::MemoryPool* pool);
+  ~BranchToColumn() = default;
+  TBranch* branch();
+
+  std::pair<std::shared_ptr<arrow::ChunkedArray>, std::shared_ptr<arrow::Field>> read(TBuffer* buffer);
 
  private:
-  std::string mBranchName;    // branch name
-  arrow::ArrayVector mChunks; // chunks
-  Int_t mNumberChuncs;        // number of chunks
-  Int_t mCounterChunk;        // chunk counter
-  Int_t mNumberRows;          // number of rows
-  Int_t mCounterRow;          // row counter
+  arrow::Status appendValues(unsigned char const* buffer, int numEntries);
+  arrow::Status finish(std::shared_ptr<arrow::Array>* array);
+  arrow::Status reserve(int numEntries);
+  TBranch* mBranch = nullptr;
+  std::string mColumnName;
+  EDataType mType;
+  std::shared_ptr<arrow::DataType> mArrowType;
+  arrow::ArrayBuilder* mValueBuilder = nullptr;
+  std::unique_ptr<arrow::FixedSizeListBuilder> mListBuilder = nullptr;
+  int mListSize = 1;
+  std::unique_ptr<arrow::ArrayBuilder> mBuilder = nullptr;
+};
 
-  // data buffers for each data type
-  bool mStatus = false;
-  arrow::Field* mField;
-  arrow::Type::type mFieldType;
-  arrow::Type::type mElementType;
-  int32_t mNumberElements;
-  std::string mLeaflistString;
-
-  TBranch* mBranchPtr = nullptr;
-
-  char* mBranchBuffer = nullptr;
-  void* mValueBuffer = nullptr;
-
-  std::shared_ptr<arrow::BooleanArray> mArray_o = nullptr;
-  //bool mBoolValueHolder;
-  bool* mVariable_o = nullptr;
-
-  uint8_t* mVariable_ub = nullptr;
-  uint16_t* mVariable_us = nullptr;
-  uint32_t* mVariable_ui = nullptr;
-  uint64_t* mVariable_ul = nullptr;
-  int8_t* mVariable_b = nullptr;
-  int16_t* mVariable_s = nullptr;
-  int32_t* mVariable_i = nullptr;
-  int64_t* mVariable_l = nullptr;
-  float* mVariable_f = nullptr;
-  double* mVariable_d = nullptr;
-
-  // initialize a branch
-  bool initBranch(TTree* tree);
-
-  // initialize chunk ib
-  bool initDataBuffer(Int_t ib);
-
+class ColumnToBranch
+{
  public:
-  BranchIterator(TTree* tree, std::shared_ptr<arrow::ChunkedArray> col, std::shared_ptr<arrow::Field> field);
-  ~BranchIterator();
+  ColumnToBranch(TTree* tree, std::shared_ptr<arrow::ChunkedArray> const& column, std::shared_ptr<arrow::Field> const& field);
+  ColumnToBranch(ColumnToBranch const& other) = delete;
+  ColumnToBranch(ColumnToBranch&& other) = delete;
+  void at(const int64_t* pos);
 
-  // has the iterator been properly initialized
-  bool getStatus();
+ private:
+  auto getCurrentBuffer();
+  void resetBuffer();
+  void accessChunk(int64_t at);
+  void nextChunk();
 
-  // fills buffer with next value
-  // returns false if end of buffer reached
-  bool push();
+  std::string mBranchName;
+  std::string mLeafList;
+  TBranch* mBranch = nullptr;
+  arrow::ChunkedArray* mColumn = nullptr;
+  int64_t const* mCurrentPos = nullptr;
+  int64_t mFirstIndex = 0;
+  int mCurrentChunk = 0;
+  int mListSize = 1;
+  ROOTTypeInfo mType;
+  std::vector<uint8_t> cache;
+  uint8_t const* mCurrent = nullptr;
+  uint8_t const* mLast = nullptr;
+  bool allocated = false;
 };
 
 class TableToTree
 {
+ public:
+  TableToTree(std::shared_ptr<arrow::Table> const& table, TFile* file, const char* treename);
+
+  TTree* process();
+  void addBranch(std::shared_ptr<arrow::ChunkedArray> const& column, std::shared_ptr<arrow::Field> const& field);
+  void addAllBranches();
 
  private:
-  TTree* mTreePtr;
-
-  // a list of BranchIterator
-  std::vector<std::unique_ptr<BranchIterator>> mBranchIterators;
-
-  // table to convert
-  std::shared_ptr<arrow::Table> mTable;
-
- public:
-  TableToTree(std::shared_ptr<arrow::Table> table,
-              TFile* file,
-              const char* treename);
-
-  // add branches
-  bool addBranch(std::shared_ptr<arrow::ChunkedArray> col, std::shared_ptr<arrow::Field> field);
-  bool addAllBranches();
-
-  // write table to tree
-  TTree* process();
+  arrow::Table* mTable;
+  int64_t mRows = 0;
+  TTree* mTree = nullptr;
+  std::vector<std::unique_ptr<ColumnToBranch>> mColumnReaders;
 };
 
 class TreeToTable
 {
+ public:
+  TreeToTable(arrow::MemoryPool* pool = arrow::default_memory_pool());
+  void setLabel(const char* label);
+  void addAllColumns(TTree* tree, std::vector<std::string>&& names = {});
+  void fill(TTree*);
+  std::shared_ptr<arrow::Table> finalize();
 
  private:
-  std::shared_ptr<arrow::Table> mTable;
-  std::vector<std::string> mColumnNames;
+  arrow::MemoryPool* mArrowMemoryPool;
+  std::vector<std::unique_ptr<BranchToColumn>> mBranchReaders;
   std::string mTableLabel;
+  std::shared_ptr<arrow::Table> mTable;
 
- public:
-  // set table label to be added into schema metadata
-  void setLabel(const char* label);
-
-  // add a column to be included in the arrow::table
-  void addColumn(const char* colname);
-
-  // add all branches in @a tree as columns
-  bool addAllColumns(TTree* tree);
-
-  // do the looping with the TTreeReader
-  void fill(TTree* tree);
-
-  // create the table
-  std::shared_ptr<arrow::Table> finalize();
+  void addReader(TBranch* branch, const char* name);
 };
 
 // -----------------------------------------------------------------------------

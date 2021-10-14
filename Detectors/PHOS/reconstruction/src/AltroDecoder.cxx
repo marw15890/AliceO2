@@ -36,7 +36,7 @@ AltroDecoderError::ErrorType_t AltroDecoder::decode(RawReaderMemory& rawreader, 
     gsl::span<const uint32_t> tmp(payloadwords.data(), payloadwords.size());
     mRCUTrailer.constructFromRawPayload(tmp);
   } catch (RCUTrailer::Error& e) {
-    LOG(ERROR) << "RCU trailer error" << (int)e.getErrorType();
+    // LOG(ERROR) << "RCU trailer error" << (int)e.getErrorType();
     mOutputHWErrors.emplace_back(mddl, kGeneralSRUErr, static_cast<char>(e.getErrorType())); //assign general SRU header errors to non-existing FEE 15
     return AltroDecoderError::RCU_TRAILER_ERROR;
   }
@@ -45,7 +45,8 @@ AltroDecoderError::ErrorType_t AltroDecoder::decode(RawReaderMemory& rawreader, 
   try {
     readChannels(payloadwords, rawFitter, currentCellContainer, currentTRUContainer);
   } catch (AltroDecoderError::ErrorType_t e) {
-    LOG(ERROR) << "Altro decoding error " << e;
+    // LOG(ERROR) << "Altro decoding error " << e;
+    mOutputHWErrors.emplace_back(mddl, kGeneralTRUErr, static_cast<char>(e)); //assign general SRU header errors to non-existing FEE 16
     return e;
   }
   return AltroDecoderError::kOK;
@@ -150,15 +151,15 @@ void AltroDecoder::readChannels(const std::vector<uint32_t>& buffer, CaloRawFitt
         CaloRawFitter::FitStatus fitResult = rawFitter->evaluate(gsl::span<uint16_t>(&mBunchwords[currentsample + 2], std::min((unsigned long)bunchlength, mBunchwords.size() - currentsample - 2)));
         currentsample += bunchlength + 2;
         //set output cell
-        if (fitResult == CaloRawFitter::FitStatus::kNoTime) { //Time evaluation error occured: should we add this err to list?
-          short fec = header.mHardwareAddress >> 7 & 0xf;     //try to extract FEE number from header
-          short branch = header.mHardwareAddress >> 11 & 0x1;
-          if (fec > 14) {
-            fec = kGeneralSRUErr;
-          }
-          fec += kGeneralTRUErr * branch;
-          mOutputHWErrors.emplace_back(mddl, fec, 8); //8: time calculation failed
-        }
+        // if (fitResult == CaloRawFitter::FitStatus::kNoTime) { //Time evaluation error occured: should we add this err to list?
+        //   short fec = header.mHardwareAddress >> 7 & 0xf;     //try to extract FEE number from header
+        //   short branch = header.mHardwareAddress >> 11 & 0x1;
+        //   if (fec > 14) {
+        //     fec = kGeneralSRUErr;
+        //   }
+        //   fec += kGeneralTRUErr * branch;
+        //   mOutputHWErrors.emplace_back(mddl, fec, 8); //8: time calculation failed
+        // }
         if (!rawFitter->isOverflow()) { //Overflow is will show wrong chi2
           short chiAddr = absId;
           chiAddr |= caloFlag << 14;

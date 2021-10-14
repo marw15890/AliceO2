@@ -11,7 +11,7 @@
 
 /// \file RecoContainerCreateTracksVariadic.h
 /// \brief Wrapper container for different reconstructed object types
-/// \author ruben.shahoyan@cern.ch
+/// \author ruben.shahoyan@cern.chM
 
 #include "Framework/ProcessingContext.h"
 #include "Framework/InputSpec.h"
@@ -21,8 +21,16 @@
 #include "DataFormatsITSMFT/CompCluster.h"
 #include "DataFormatsITS/TrackITS.h"
 #include "DataFormatsMFT/TrackMFT.h"
+
 #include "DataFormatsMCH/TrackMCH.h"
+#include "DataFormatsMCH/ClusterBlock.h"
 #include "DataFormatsMCH/ROFRecord.h"
+
+#include "DataFormatsMID/ROFRecord.h"
+#include "DataFormatsMID/Cluster3D.h"
+#include "DataFormatsMID/Track.h"
+#include "DataFormatsMID/MCClusterLabel.h"
+
 #include "DataFormatsTPC/TrackTPC.h"
 #include "DataFormatsTOF/Cluster.h"
 #include "DataFormatsITSMFT/ROFRecord.h"
@@ -32,9 +40,20 @@
 #include "DataFormatsZDC/RecEvent.h"
 #include "DataFormatsTRD/TrackTRD.h"
 #include "DataFormatsTRD/TrackTriggerRecord.h"
+#include "DataFormatsCTP/Digits.h"
 #include "ReconstructionDataFormats/TrackTPCITS.h"
 #include "ReconstructionDataFormats/TrackTPCTOF.h"
 #include "ReconstructionDataFormats/MatchInfoTOF.h"
+#include "DataFormatsPHOS/Cell.h"
+#include "DataFormatsPHOS/TriggerRecord.h"
+#include "DataFormatsPHOS/MCLabel.h"
+#include "DataFormatsCPV/Cluster.h"
+#include "DataFormatsCPV/TriggerRecord.h"
+#include "DataFormatsEMCAL/Cell.h"
+#include "DataFormatsEMCAL/TriggerRecord.h"
+#include "DataFormatsEMCAL/MCLabel.h"
+
+#include "ReconstructionDataFormats/GlobalFwdTrack.h"
 #include "DataFormatsGlobalTracking/RecoContainer.h"
 
 //________________________________________________________
@@ -72,6 +91,7 @@ void o2::globaltracking::RecoContainer::createTracksVariadic(T creator) const
   const auto tracksMCH = getMCHTracks();
   const auto tracksTPC = getTPCTracks();
   const auto tracksTPCITS = getTPCITSTracks();
+  const auto tracksMFTMCH = getGlobalFwdTracks();
   const auto tracksTPCTOF = getTPCTOFTracks();   // TOF-TPC tracks with refit
   const auto matchesTPCTOF = getTPCTOFMatches(); // and corresponding matches
   const auto tracksTPCTRD = getTPCTRDTracks<o2::trd::TrackTRD>();
@@ -86,6 +106,7 @@ void o2::globaltracking::RecoContainer::createTracksVariadic(T creator) const
   usedData[GTrackID::MFT].resize(tracksMFT.size());                   // to flag used MFT tracks
   usedData[GTrackID::TPC].resize(tracksTPC.size());                   // to flag used TPC tracks
   usedData[GTrackID::ITSTPC].resize(tracksTPCITS.size());             // to flag used ITSTPC tracks
+  usedData[GTrackID::MFTMCH].resize(tracksMFTMCH.size());             // to flag used MFTMCH tracks
   usedData[GTrackID::ITSTPCTRD].resize(tracksITSTPCTRD.size());       // to flag used ITSTPCTRD tracks
   usedData[GTrackID::TPCTRD].resize(tracksTPCTRD.size());             // to flag used TPCTRD tracks
   usedData[GTrackID::ITSTPCTOF].resize(getITSTPCTOFMatches().size()); // to flag used ITSTPC-TOF matches
@@ -149,7 +170,7 @@ void o2::globaltracking::RecoContainer::createTracksVariadic(T creator) const
           flagUsed(trc.getRefGlobalTrackId()); // flag seeding TPC track
           continue;
         }
-        if (creator(trc, {i, GTrackID::TPCTRD}, t0, 1e-6)) { // assign 1ns error to BC
+        if (creator(trc, {i, GTrackID::TPCTRD}, t0, 1e-3)) { // assign 1ns error to BC
           flagUsed2(i, GTrackID::TPCTRD);                    // flag itself (is it needed?)
           flagUsed(trc.getRefGlobalTrackId());               // flag seeding TPC track
         }
@@ -189,6 +210,16 @@ void o2::globaltracking::RecoContainer::createTracksVariadic(T creator) const
       const auto& trc = tracksTPCTOF[i];
       if (creator(trc, {i, GTrackID::TPCTOF}, trc.getTimeMUS().getTimeStamp(), trc.getTimeMUS().getTimeStampError())) {
         flagUsed(gidx); // flag used TPC tracks
+      }
+    }
+  }
+
+  // MFT-MCH tracks
+  {
+    for (unsigned i = 0; i < tracksMFTMCH.size(); i++) {
+      const auto& matchTr = tracksMFTMCH[i];
+      if (creator(matchTr, {i, GTrackID::MFTMCH}, matchTr.getTimeMUS().getTimeStamp(), matchTr.getTimeMUS().getTimeStampError())) {
+        flagUsed2(i, GTrackID::MFTMCH);
       }
     }
   }
@@ -317,6 +348,12 @@ template <class T>
 inline constexpr auto isTPCITSTrack()
 {
   return std::is_same_v<std::decay_t<T>, o2::dataformats::TrackTPCITS>;
+}
+
+template <class T>
+inline constexpr auto isGlobalFwdTrack()
+{
+  return std::is_same_v<std::decay_t<T>, o2::dataformats::GlobalFwdTrack>;
 }
 
 template <class T>

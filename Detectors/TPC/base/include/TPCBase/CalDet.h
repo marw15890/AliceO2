@@ -88,6 +88,8 @@ class CalDet
   const CalDet& operator*=(const T& val);
   const CalDet& operator/=(const T& val);
 
+  const CalDet& operator=(const T& val);
+
   template <class U>
   friend CalDet<U> operator+(const CalDet<U>&, const CalDet<U>&);
 
@@ -144,7 +146,8 @@ inline const T CalDet<T>::getValue(const ROC roc, const size_t row, const size_t
       break;
     }
     case PadSubset::Region: {
-      return T{};
+      const auto globalRow = roc.isOROC() ? mappedRow + mapper.getNumberOfRowsROC(ROC(0)) : mappedRow;
+      return mData[Mapper::REGION[globalRow] + roc.getSector() * Mapper::NREGIONS].getValue(Mapper::OFFSETCRUGLOBAL[globalRow] + mappedPad);
       break;
     }
   }
@@ -334,6 +337,16 @@ inline const CalDet<T>& CalDet<T>::operator/=(const T& val)
 {
   for (auto& cal : mData) {
     cal /= val;
+  }
+  return *this;
+}
+
+//______________________________________________________________________________
+template <class T>
+inline const CalDet<T>& CalDet<T>::operator=(const T& val)
+{
+  for (auto& cal : mData) {
+    cal = val;
   }
   return *this;
 }

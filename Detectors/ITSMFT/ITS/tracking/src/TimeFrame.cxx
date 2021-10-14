@@ -178,6 +178,7 @@ void TimeFrame::initialise(const int iteration, const MemoryParameters& memParam
     mTracklets.resize(trkParam.TrackletsPerRoad());
     mTrackletLabels.resize(trkParam.TrackletsPerRoad());
     mTrackletsLookupTable.resize(trkParam.CellsPerRoad());
+    mIndexTables.clear();
     mIndexTableUtils.setTrackingParameters(trkParam);
 
     for (unsigned int iLayer{0}; iLayer < mClusters.size(); ++iLayer) {
@@ -192,11 +193,11 @@ void TimeFrame::initialise(const int iteration, const MemoryParameters& memParam
 
     mIndexTables.resize(mNrof);
     std::vector<ClusterHelper> cHelper;
+    std::vector<int> clsPerBin(trkParam.PhiBins * trkParam.ZBins, 0);
     for (int rof{0}; rof < mNrof; ++rof) {
       mIndexTables[rof].resize(trkParam.TrackletsPerRoad(), std::vector<int>(trkParam.ZBins * trkParam.PhiBins + 1, 0));
       for (int iLayer{0}; iLayer < trkParam.NLayers; ++iLayer) {
-        std::vector<int> clsPerBin(trkParam.PhiBins * trkParam.ZBins, 0);
-
+        std::fill(clsPerBin.begin(), clsPerBin.end(), 0);
         const auto unsortedClusters{getUnsortedClustersOnLayer(rof, iLayer)};
         const int clustersNum{static_cast<int>(unsortedClusters.size())};
 
@@ -248,6 +249,7 @@ void TimeFrame::initialise(const int iteration, const MemoryParameters& memParam
   }
 
   mRoads.clear();
+  mRoadLabels.clear();
 
   for (unsigned int iLayer{0}; iLayer < mTracklets.size(); ++iLayer) {
     mTracklets[iLayer].clear();

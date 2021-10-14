@@ -49,6 +49,7 @@
 #include "MCHRawElecMap/Mapper.h"
 #include "MCHMappingInterface/Segmentation.h"
 #include "MCHWorkflow/DataDecoderSpec.h"
+#include "CommonUtils/VerbosityConfig.h"
 
 //#define MCH_RAW_DATADECODER_DEBUG_DIGIT_TIME 1
 
@@ -89,8 +90,8 @@ class DataDecoderTask
                                useDummyElecMap);
 
     auto stop = [this]() {
-      LOG(INFO) << "decoding duration = " << mTimeDecoding.count() * 1000 / mTFcount << " us / TF";
-      LOG(INFO) << "ROF finder duration = " << mTimeROFFinder.count() * 1000 / mTFcount << " us / TF";
+      LOG(info) << "mch-data-decoder: decoding duration = " << mTimeDecoding.count() * 1000 / mTFcount << " us / TF";
+      LOG(info) << "mch-data-decoder: ROF finder duration = " << mTimeROFFinder.count() * 1000 / mTFcount << " us / TF";
     };
     ic.services().get<CallbackService>().set(CallbackService::Id::Stop, stop);
   }
@@ -102,15 +103,10 @@ class DataDecoderTask
     const auto* dh = DataRefUtils::getHeader<o2::header::DataHeader*>(pc.inputs().getFirstValid(true));
     mFirstTForbit = dh->firstTForbit;
 
-    if (!mDecoder->getFirstOrbitInRun()) {
-      int firstRunOrbit = std::max<int>(0, mFirstTForbit - dh->tfCounter * o2::raw::HBFUtils::Instance().getNOrbitsPerTF());
-      mDecoder->setFirstOrbitInRun(firstRunOrbit);
-    }
     mDecoder->setFirstOrbitInTF(mFirstTForbit);
 
     if (mDebug) {
-      std::cout << "[DataDecoderSpec::run] first run orbit is " << mDecoder->getFirstOrbitInRun().value() << std::endl;
-      std::cout << "[DataDecoderSpec::run] first TF orbit is " << mFirstTForbit << std::endl;
+      LOG(INFO) << "[DataDecoderSpec::run] first TF orbit is " << mFirstTForbit;
     }
 
     // get the input buffer
@@ -152,9 +148,6 @@ class DataDecoderTask
 
     const RDH* rdh = reinterpret_cast<const RDH*>(raw);
     mFirstTForbit = o2::raw::RDHUtils::getHeartBeatOrbit(rdh);
-    if (!mDecoder->getFirstOrbitInRun()) {
-      mDecoder->setFirstOrbitInRun(mFirstTForbit);
-    }
     mDecoder->setFirstOrbitInTF(mFirstTForbit);
 
     gsl::span<const std::byte> buffer(reinterpret_cast<const std::byte*>(raw), payloadSize);
@@ -163,9 +156,9 @@ class DataDecoderTask
 
   void sendEmptyOutput(framework::DataAllocator& output)
   {
-    decltype(mDecoder->getOrbits()) orbits{};
-    decltype(mDecoder->getDigits()) digits{};
+    std::vector<Digit> digits;
     std::vector<ROFRecord> rofs;
+    std::vector<OrbitInfo> orbits;
     output.snapshot(Output{header::gDataOriginMCH, "DIGITS", 0}, digits);
     output.snapshot(Output{header::gDataOriginMCH, "DIGITROFS", 0}, rofs);
     output.snapshot(Output{header::gDataOriginMCH, "ORBITS", 0}, orbits);
@@ -178,6 +171,7 @@ class DataDecoderTask
     /// "delayed message" mechanism created it in absence of real data
     /// from upstream, i.e. the TF was dropped.
     constexpr auto origin = header::gDataOriginMCH;
+    static size_t contDeadBeef = 0; // number of times 0xDEADBEEF was seen continuously
     o2::framework::InputSpec dummy{"dummy",
                                    framework::ConcreteDataMatcher{origin,
                                                                   header::gDataDescriptionRawData,
@@ -185,9 +179,16 @@ class DataDecoderTask
     for (const auto& ref : o2::framework::InputRecordWalker(pc.inputs(), {dummy})) {
       const auto dh = o2::framework::DataRefUtils::getHeader<o2::header::DataHeader*>(ref);
       if (dh->payloadSize == 0) {
+        auto maxWarn = o2::conf::VerbosityConfig::Instance().maxWarnDeadBeef;
+        if (++contDeadBeef <= maxWarn) {
+          LOGP(WARNING, "Found input [{}/{}/{:#x}] TF#{} 1st_orbit:{} Payload {} : assuming no payload for all links in this TF{}",
+               dh->dataOrigin.str, dh->dataDescription.str, dh->subSpecification, dh->tfCounter, dh->firstTForbit, dh->payloadSize,
+               contDeadBeef == maxWarn ? fmt::format(". {} such inputs in row received, stopping reporting", contDeadBeef) : "");
+        }
         return true;
       }
     }
+    contDeadBeef = 0; // if good data, reset the counter
     return false;
   }
 
@@ -218,9 +219,8 @@ class DataDecoderTask
       return buf;
     };
 
-    mDecoder->reset();
-
     auto tStart = std::chrono::high_resolution_clock::now();
+    mDecoder->reset();
     for (auto&& input : pc.inputs()) {
       if (input.spec->binding == "readout") {
         decodeReadout(input);
@@ -301,7 +301,7 @@ class DataDecoderTask
 };
 
 //_________________________________________________________________________________________________
-o2::framework::DataProcessorSpec getDecodingSpec(std::string inputSpec,
+o2::framework::DataProcessorSpec getDecodingSpec(const char* specName, std::string inputSpec,
                                                  bool askSTFDist)
 {
   auto inputs = o2::framework::select(inputSpec.c_str());
@@ -317,7 +317,7 @@ o2::framework::DataProcessorSpec getDecodingSpec(std::string inputSpec,
   }
   o2::mch::raw::DataDecoderTask task(inputSpec);
   return DataProcessorSpec{
-    "DataDecoder",
+    specName,
     inputs,
     Outputs{OutputSpec{header::gDataOriginMCH, "DIGITS", 0, Lifetime::Timeframe},
             OutputSpec{header::gDataOriginMCH, "DIGITROFS", 0, Lifetime::Timeframe},

@@ -18,6 +18,7 @@
 #include "Framework/WorkflowSpec.h"
 #include "Framework/ConfigParamRegistry.h"
 #include "Framework/ControlService.h"
+#include "Framework/DeviceSpec.h"
 #include "DataFormatsITSMFT/Digit.h"
 #include "DataFormatsITSMFT/ROFRecord.h"
 #include "ITSMFTReconstruction/RawPixelDecoder.h"
@@ -41,8 +42,8 @@ using namespace o2::framework;
 
 ///_______________________________________
 template <class Mapping>
-STFDecoder<Mapping>::STFDecoder(bool doClusters, bool doPatterns, bool doDigits, bool doCalib, std::string_view dict, std::string_view noise)
-  : mDoClusters(doClusters), mDoPatterns(doPatterns), mDoDigits(doDigits), mDoCalibData(doCalib), mDictName(dict), mNoiseName(noise)
+STFDecoder<Mapping>::STFDecoder(const STFDecoderInp& inp)
+  : mDoClusters(inp.doClusters), mDoPatterns(inp.doPatterns), mDoDigits(inp.doDigits), mDoCalibData(inp.doCalib)
 {
   mSelfName = o2::utils::Str::concat_string(Mapping::getName(), "STFDecoder");
   mTimer.Stop();
@@ -65,20 +66,30 @@ void STFDecoder<Mapping>::init(InitContext& ic)
   }
 
   auto detID = Mapping::getDetID();
+  if (detID == o2::detectors::DetID::ITS) {
+    mDictName = o2::itsmft::ClustererParam<o2::detectors::DetID::ITS>::Instance().dictFilePath;
+    mNoiseName = o2::itsmft::ClustererParam<o2::detectors::DetID::ITS>::Instance().noiseFilePath;
+  } else {
+    mDictName = o2::itsmft::ClustererParam<o2::detectors::DetID::MFT>::Instance().dictFilePath;
+    mNoiseName = o2::itsmft::ClustererParam<o2::detectors::DetID::MFT>::Instance().noiseFilePath;
+  }
+  mNoiseName = o2::base::NameConf::getNoiseFileName(detID, mNoiseName, "root");
+  mDictName = o2::base::NameConf::getAlpideClusterDictionaryFileName(detID, mDictName, "bin");
+
   try {
     mNThreads = std::max(1, ic.options().get<int>("nthreads"));
     mDecoder->setNThreads(mNThreads);
     mDecoder->setFormat(ic.options().get<bool>("old-format") ? GBTLink::OldFormat : GBTLink::NewFormat);
-    mDecoder->setVerbosity(ic.options().get<int>("decoder-verbosity"));
+    mUnmutExtraLanes = ic.options().get<bool>("unmute-extra-lanes");
+    mVerbosity = ic.options().get<int>("decoder-verbosity");
     mDecoder->setFillCalibData(mDoCalibData);
-    std::string noiseFile = o2::base::NameConf::getNoiseFileName(detID, mNoiseName, "root");
-    if (o2::utils::Str::pathExists(noiseFile)) {
-      TFile* f = TFile::Open(noiseFile.data(), "old");
-      auto pnoise = (NoiseMap*)f->Get("Noise");
+    if (o2::utils::Str::pathExists(mNoiseName)) {
+      TFile* f = TFile::Open(mNoiseName.data(), "old");
+      auto pnoise = (NoiseMap*)f->Get("ccdb_object");
       AlpideCoder::setNoisyPixels(pnoise);
-      LOG(INFO) << mSelfName << " loading noise map file: " << noiseFile;
+      LOG(INFO) << mSelfName << " loading noise map file: " << mNoiseName;
     } else {
-      LOG(INFO) << mSelfName << " Noise file " << noiseFile << " is absent, " << Mapping::getName() << " running without noise suppression";
+      LOG(INFO) << mSelfName << " Noise file " << mNoiseName << " is absent, " << Mapping::getName() << " running without noise suppression";
     }
   } catch (const std::exception& e) {
     LOG(ERROR) << "exception was thrown in decoder configuration: " << e.what();
@@ -107,12 +118,11 @@ void STFDecoder<Mapping>::init(InitContext& ic)
       mClusterer->setMaxBCSeparationToMask(nbc);
       mClusterer->setMaxRowColDiffToMask(clParams.maxRowColDiffToMask);
 
-      std::string dictFile = o2::base::NameConf::getAlpideClusterDictionaryFileName(detID, mDictName, "bin");
-      if (o2::utils::Str::pathExists(dictFile)) {
-        mClusterer->loadDictionary(dictFile);
-        LOG(INFO) << mSelfName << " clusterer running with a provided dictionary: " << dictFile;
+      if (o2::utils::Str::pathExists(mDictName)) {
+        mClusterer->loadDictionary(mDictName);
+        LOG(INFO) << mSelfName << " clusterer running with a provided dictionary: " << mDictName;
       } else {
-        LOG(INFO) << mSelfName << " Dictionary " << dictFile << " is absent, " << Mapping::getName() << " clusterer expects cluster patterns";
+        LOG(INFO) << mSelfName << " Dictionary " << mDictName << " is absent, " << Mapping::getName() << " clusterer expects cluster patterns";
       }
       mClusterer->print();
     } catch (const std::exception& e) {
@@ -129,6 +139,13 @@ void STFDecoder<Mapping>::init(InitContext& ic)
 template <class Mapping>
 void STFDecoder<Mapping>::run(ProcessingContext& pc)
 {
+  static bool firstCall = true;
+  if (firstCall) {
+    firstCall = false;
+    mDecoder->setInstanceID(pc.services().get<const o2::framework::DeviceSpec>().inputTimesliceId);
+    mDecoder->setNInstances(pc.services().get<const o2::framework::DeviceSpec>().maxInputTimeslices);
+    mDecoder->setVerbosity(mDecoder->getInstanceID() == 0 ? mVerbosity : (mUnmutExtraLanes ? mVerbosity : -1));
+  }
   int nSlots = pc.inputs().getNofParts(0);
   double timeCPU0 = mTimer.CpuTime(), timeReal0 = mTimer.RealTime();
   mTimer.Start(false);
@@ -215,74 +232,44 @@ void STFDecoder<Mapping>::endOfStream(EndOfStreamContext& ec)
   }
 }
 
-DataProcessorSpec getSTFDecoderITSSpec(bool doClusters, bool doPatterns, bool doDigits, bool doCalib, bool askDISTSTF, const std::string& dict, const std::string& noise)
+DataProcessorSpec getSTFDecoderSpec(const STFDecoderInp& inp)
 {
   std::vector<OutputSpec> outputs;
-  auto orig = o2::header::gDataOriginITS;
-
-  if (doDigits) {
-    outputs.emplace_back(orig, "DIGITS", 0, Lifetime::Timeframe);
-    outputs.emplace_back(orig, "DIGITSROF", 0, Lifetime::Timeframe);
-    if (doCalib) {
-      outputs.emplace_back(orig, "GBTCALIB", 0, Lifetime::Timeframe);
+  if (inp.doDigits) {
+    outputs.emplace_back(inp.origin, "DIGITS", 0, Lifetime::Timeframe);
+    outputs.emplace_back(inp.origin, "DIGITSROF", 0, Lifetime::Timeframe);
+    if (inp.doCalib) {
+      outputs.emplace_back(inp.origin, "GBTCALIB", 0, Lifetime::Timeframe);
     }
   }
-  if (doClusters) {
-    outputs.emplace_back(orig, "COMPCLUSTERS", 0, Lifetime::Timeframe);
-    outputs.emplace_back(orig, "CLUSTERSROF", 0, Lifetime::Timeframe);
-    outputs.emplace_back(orig, "PATTERNS", 0, Lifetime::Timeframe);
-  }
-
-  std::vector<InputSpec> inputs{{"stf", ConcreteDataTypeMatcher{orig, "RAWDATA"}, Lifetime::Optional}};
-  if (askDISTSTF) {
-    inputs.emplace_back("stdDist", "FLP", "DISTSUBTIMEFRAME", 0, Lifetime::Timeframe);
-  }
-
-  return DataProcessorSpec{
-    "its-stf-decoder",
-    inputs,
-    outputs,
-    AlgorithmSpec{adaptFromTask<STFDecoder<ChipMappingITS>>(doClusters, doPatterns, doDigits, doCalib, dict, noise)},
-    Options{
-      {"nthreads", VariantType::Int, 1, {"Number of decoding/clustering threads"}},
-      {"old-format", VariantType::Bool, false, {"Use old format (1 trigger per CRU page)"}},
-      {"decoder-verbosity", VariantType::Int, 0, {"Verbosity level (-1: silent, 0: errors, 1: headers, 2: data)"}}}};
-}
-
-DataProcessorSpec getSTFDecoderMFTSpec(bool doClusters, bool doPatterns, bool doDigits, bool doCalib, bool askDISTSTF, const std::string& dict, const std::string& noise)
-{
-  std::vector<OutputSpec> outputs;
-  auto orig = o2::header::gDataOriginMFT;
-  if (doDigits) {
-    outputs.emplace_back(orig, "DIGITS", 0, Lifetime::Timeframe);
-    outputs.emplace_back(orig, "DIGITSROF", 0, Lifetime::Timeframe);
-    if (doCalib) {
-      outputs.emplace_back(orig, "GBTCALIB", 0, Lifetime::Timeframe);
-    }
-  }
-  if (doClusters) {
-    outputs.emplace_back(orig, "COMPCLUSTERS", 0, Lifetime::Timeframe);
-    outputs.emplace_back(orig, "CLUSTERSROF", 0, Lifetime::Timeframe);
+  if (inp.doClusters) {
+    outputs.emplace_back(inp.origin, "COMPCLUSTERS", 0, Lifetime::Timeframe);
+    outputs.emplace_back(inp.origin, "CLUSTERSROF", 0, Lifetime::Timeframe);
     // in principle, we don't need to open this input if we don't need to send real data,
     // but other devices expecting it do not know about options of this device: problem?
     // if (doClusters && doPatterns)
-    outputs.emplace_back(orig, "PATTERNS", 0, Lifetime::Timeframe);
+    outputs.emplace_back(inp.origin, "PATTERNS", 0, Lifetime::Timeframe);
   }
 
-  std::vector<InputSpec> inputs{{"stf", ConcreteDataTypeMatcher{orig, "RAWDATA"}, Lifetime::Optional}};
-  if (askDISTSTF) {
-    inputs.emplace_back("stdDist", "FLP", "DISTSUBTIMEFRAME", 0, Lifetime::Timeframe);
+  auto inputs = o2::framework::select(inp.inputSpec.c_str());
+  if (inp.askSTFDist) {
+    for (auto& ins : inputs) { // mark input as optional in order not to block the workflow if our raw data happen to be missing in some TFs
+      ins.lifetime = Lifetime::Optional;
+    }
+    // request the input FLP/DISTSUBTIMEFRAME/0 that is _guaranteed_ to be present, even if none of our raw data is present.
+    inputs.emplace_back("stfDist", "FLP", "DISTSUBTIMEFRAME", 0, o2::framework::Lifetime::Timeframe);
   }
 
   return DataProcessorSpec{
-    "mft-stf-decoder",
+    inp.deviceName,
     inputs,
     outputs,
-    AlgorithmSpec{adaptFromTask<STFDecoder<ChipMappingMFT>>(doClusters, doPatterns, doDigits, doCalib, dict, noise)},
+    inp.origin == o2::header::gDataOriginITS ? AlgorithmSpec{adaptFromTask<STFDecoder<ChipMappingITS>>(inp)} : AlgorithmSpec{adaptFromTask<STFDecoder<ChipMappingMFT>>(inp)},
     Options{
       {"nthreads", VariantType::Int, 1, {"Number of decoding/clustering threads"}},
       {"old-format", VariantType::Bool, false, {"Use old format (1 trigger per CRU page)"}},
-      {"decoder-verbosity", VariantType::Int, 0, {"Verbosity level (-1: silent, 0: errors, 1: headers, 2: data)"}}}};
+      {"decoder-verbosity", VariantType::Int, 0, {"Verbosity level (-1: silent, 0: errors, 1: headers, 2: data) of 1st lane"}},
+      {"unmute-extra-lanes", VariantType::Bool, false, {"allow extra lanes to be as verbose as 1st one"}}}};
 }
 
 } // namespace itsmft

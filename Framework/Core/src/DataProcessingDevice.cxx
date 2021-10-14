@@ -41,6 +41,7 @@
 #include "DataProcessingStatus.h"
 #include "DataProcessingHelpers.h"
 #include "DataRelayerHelpers.h"
+#include "ProcessingPoliciesHelpers.h"
 
 #include "ScopedExit.h"
 
@@ -90,7 +91,7 @@ void on_communication_requested(uv_async_t* s)
   state->loopReason |= DeviceState::METRICS_MUST_FLUSH;
 }
 
-DataProcessingDevice::DataProcessingDevice(RunningDeviceRef ref, ServiceRegistry& registry)
+DataProcessingDevice::DataProcessingDevice(RunningDeviceRef ref, ServiceRegistry& registry, ProcessingPolicies& policies)
   : mSpec{registry.get<RunningWorkflowInfo const>().devices[ref.index]},
     mState{registry.get<DeviceState>()},
     mInit{mSpec.algorithm.onInit},
@@ -101,7 +102,8 @@ DataProcessingDevice::DataProcessingDevice(RunningDeviceRef ref, ServiceRegistry
     mServiceRegistry{registry},
     mAllocator{&mTimingInfo, &registry, mSpec.outputs},
     mQuotaEvaluator{registry.get<ComputingQuotaEvaluator>()},
-    mAwakeHandle{nullptr}
+    mAwakeHandle{nullptr},
+    mProcessingPolicies{policies}
 {
   /// FIXME: move erro handling to a service?
   if (mError != nullptr) {
@@ -116,7 +118,7 @@ DataProcessingDevice::DataProcessingDevice(RunningDeviceRef ref, ServiceRegistry
       errorCallback(errorContext);
     };
   } else {
-    mErrorHandling = [&errorPolicy = mErrorPolicy,
+    mErrorHandling = [&errorPolicy = mProcessingPolicies.error,
                       &serviceRegistry = mServiceRegistry](RuntimeErrorRef e, InputRecord& record) {
       ZoneScopedN("Error handling");
       auto& err = error_from_ref(e);
@@ -186,6 +188,7 @@ void run_completion(uv_work_t* handle, int status)
   static std::function<void(ComputingQuotaOffer const&, ComputingQuotaStats&)> reportConsumedOffer = [&monitoring = context.registry->get<Monitoring>()](ComputingQuotaOffer const& accumulatedConsumed, ComputingQuotaStats& stats) {
     stats.totalConsumedBytes += accumulatedConsumed.sharedMemory;
     monitoring.send(Metric{(uint64_t)stats.totalConsumedBytes, "shm-offer-bytes-consumed"}.addTag(Key::Subsystem, Value::DPL));
+    monitoring.flushBuffer();
   };
 
   static std::function<void(ComputingQuotaOffer const&, ComputingQuotaStats const&)> reportExpiredOffer = [&monitoring = context.registry->get<Monitoring>()](ComputingQuotaOffer const& offer, ComputingQuotaStats const& stats) {
@@ -537,6 +540,23 @@ void DataProcessingDevice::fillContext(DataProcessorContext& context, DeviceCont
   context.deviceContext = &deviceContext;
   /// Callback for the error handling
   context.errorHandling = &mErrorHandling;
+  /// We must make sure there is no optional
+  /// if we want to optimize the forwarding
+  context.canForwardEarly = (mSpec.forwards.empty() == false) && mProcessingPolicies.earlyForward != EarlyForwardPolicy::NEVER;
+  for (auto& forwarded : mSpec.forwards) {
+    if (strncmp(DataSpecUtils::asConcreteOrigin(forwarded.matcher).str, "AOD", 3) == 0) {
+      context.canForwardEarly = false;
+      break;
+    }
+    if (DataSpecUtils::partialMatch(forwarded.matcher, o2::header::DataDescription{"RAWDATA"}) && mProcessingPolicies.earlyForward == EarlyForwardPolicy::NORAW) {
+      context.canForwardEarly = false;
+      break;
+    }
+    if (forwarded.matcher.lifetime == Lifetime::Optional) {
+      context.canForwardEarly = false;
+      break;
+    }
+  }
 }
 
 void DataProcessingDevice::PreRun()
@@ -786,6 +806,7 @@ void DataProcessingDevice::doRun(DataProcessorContext& context)
   }
 
   if (context.deviceContext->state->streaming == StreamingState::EndOfStreaming) {
+    context.registry->get<DriverClient>().flushPending();
     // We keep processing data until we are Idle.
     // FIXME: not sure this is the correct way to drain the queues, but
     // I guess we will see.
@@ -839,8 +860,6 @@ void DataProcessingDevice::ResetTask()
 struct WaitBackpressurePolicy {
   void backpressure(InputChannelInfo const& info)
   {
-    // FIXME: fill metrics rather than log.
-    LOGP(WARN, "Backpressure on channel {}. Waiting.", info.channel->GetName());
   }
 };
 
@@ -946,11 +965,21 @@ void DataProcessingDevice::handleData(DataProcessorContext& context, InputChanne
           pi += dh->splitPayloadParts > 0 ? dh->splitPayloadParts - 1 : 0;
           switch (relayed) {
             case DataRelayer::Backpressured:
+              if (info.normalOpsNotified == true && info.backpressureNotified == false) {
+                LOGP(WARN, "Backpressure on channel {}. Waiting.", info.channel->GetName());
+                info.backpressureNotified = true;
+                info.normalOpsNotified = false;
+              }
               policy.backpressure(info);
               break;
             case DataRelayer::Dropped:
             case DataRelayer::Invalid:
             case DataRelayer::WillRelay:
+              if (info.normalOpsNotified == false && info.backpressureNotified == true) {
+                LOGP(info, "Back to normal on channel {}.", info.channel->GetName());
+                info.normalOpsNotified = true;
+                info.backpressureNotified = false;
+              }
               break;
           }
         } break;
@@ -1159,11 +1188,12 @@ bool DataProcessingDevice::tryDispatchComputation(DataProcessorContext& context,
   // FIXME: do it in a smarter way than O(N^2)
   auto forwardInputs = [&reportError,
                         &spec = context.deviceContext->spec,
-                        &device = context.deviceContext->device, &currentSetOfInputs](TimesliceSlot slot, InputRecord& record) {
+                        &device = context.deviceContext->device, &currentSetOfInputs](TimesliceSlot slot, InputRecord& record, bool copy) {
     ZoneScopedN("forward inputs");
     assert(record.size() == currentSetOfInputs.size());
     // we collect all messages per forward in a map and send them together
-    std::unordered_map<std::string, FairMQParts> forwardedParts;
+    std::vector<FairMQParts> forwardedParts;
+    forwardedParts.resize(spec->forwards.size());
     for (size_t ii = 0, ie = record.size(); ii < ie; ++ii) {
       DataRef input = record.getByPos(ii);
 
@@ -1190,44 +1220,70 @@ bool DataProcessingDevice::tryDispatchComputation(DataProcessorContext& context,
         continue;
       }
 
-      for (auto& part : currentSetOfInputs[ii]) {
-        for (auto const& forward : spec->forwards) {
-          if (DataSpecUtils::match(forward.matcher, dh->dataOrigin, dh->dataDescription, dh->subSpecification) == false || (dph->startTime % forward.maxTimeslices) != forward.timeslice) {
-            continue;
-          }
-          auto& header = part.header;
-          auto& payload = part.payload;
+      int cachedForwardingChoice = -1;
 
-          if (header.get() == nullptr) {
-            // FIXME: this should not happen, however it's actually harmless and
-            //        we can simply discard it for the moment.
-            // LOG(ERROR) << "Missing header! " << dh->dataDescription;
-            continue;
-          }
-          auto fdph = o2::header::get<DataProcessingHeader*>(header.get()->GetData());
-          if (fdph == nullptr) {
-            LOG(ERROR) << "Forwarded data does not have a DataProcessingHeader";
-            continue;
-          }
-          auto fdh = o2::header::get<DataHeader*>(header.get()->GetData());
-          if (fdh == nullptr) {
-            LOG(ERROR) << "Forwarded data does not have a DataHeader";
-            continue;
-          }
+      for (size_t pi = 0; pi < currentSetOfInputs[ii].size(); ++pi) {
+        auto& part = currentSetOfInputs[ii][pi];
+        auto& header = part.header;
+        auto& payload = part.payload;
+        if (header.get() == nullptr) {
+          // FIXME: this should not happen, however it's actually harmless and
+          //        we can simply discard it for the moment.
+          // LOG(ERROR) << "Missing header! " << dh->dataDescription;
+          continue;
+        }
 
-          forwardedParts[forward.channel].AddPart(std::move(header));
-          forwardedParts[forward.channel].AddPart(std::move(payload));
+        auto fdph = o2::header::get<DataProcessingHeader*>(header.get()->GetData());
+        if (fdph == nullptr) {
+          LOG(ERROR) << "Data is missing DataProcessingHeader";
+          continue;
+        }
+        auto fdh = o2::header::get<DataHeader*>(header.get()->GetData());
+        if (fdh == nullptr) {
+          LOG(ERROR) << "Data is missing DataHeader";
+          continue;
+        }
+        // We need to find the forward route only for the first
+        // part of a split payload. All the others will use the same.
+        if (fdh->splitPayloadIndex == 0) {
+          cachedForwardingChoice = -1;
+          for (size_t fi = 0; fi < spec->forwards.size(); fi++) {
+            auto& forward = spec->forwards[fi];
+            if (DataSpecUtils::match(forward.matcher, dh->dataOrigin, dh->dataDescription, dh->subSpecification) == false || (dph->startTime % forward.maxTimeslices) != forward.timeslice) {
+              continue;
+            }
+            cachedForwardingChoice = fi;
+            break;
+          }
+        }
+        /// We did not find a match. Skip it.
+        if (cachedForwardingChoice == -1) {
+          continue;
+        }
+
+        auto& forward = spec->forwards[cachedForwardingChoice];
+
+        if (copy) {
+          auto&& newHeader = header->GetTransport()->CreateMessage();
+          auto&& newPayload = header->GetTransport()->CreateMessage();
+          newHeader->Copy(*header);
+          newPayload->Copy(*payload);
+
+          forwardedParts[cachedForwardingChoice].AddPart(std::move(newHeader));
+          forwardedParts[cachedForwardingChoice].AddPart(std::move(newPayload));
+        } else {
+          forwardedParts[cachedForwardingChoice].AddPart(std::move(header));
+          forwardedParts[cachedForwardingChoice].AddPart(std::move(payload));
         }
       }
     }
-    for (auto& [channelName, channelParts] : forwardedParts) {
-      if (channelParts.Size() == 0) {
+    for (size_t fi = 0; fi < spec->forwards.size(); fi++) {
+      if (forwardedParts[fi].Size() == 0) {
         continue;
       }
-      assert(channelParts.Size() % 2 == 0);
-      assert(o2::header::get<DataProcessingHeader*>(channelParts.At(0)->GetData()));
+      assert(forwardedParts[fi].Size() % 2 == 0);
       // in DPL we are using subchannel 0 only
-      device->Send(channelParts, channelName, 0);
+      device->Send(forwardedParts[fi], spec->forwards[fi].channel, 0);
     }
   };
 
@@ -1268,6 +1324,7 @@ bool DataProcessingDevice::tryDispatchComputation(DataProcessorContext& context,
     }
   };
 
+  // This is the main dispatching loop
   for (auto action : getReadyActions()) {
     if (action.op == CompletionPolicy::CompletionOp::Wait) {
       continue;
@@ -1284,9 +1341,16 @@ bool DataProcessingDevice::tryDispatchComputation(DataProcessorContext& context,
     if (action.op == CompletionPolicy::CompletionOp::Discard) {
       context.registry->postDispatchingCallbacks(processContext);
       if (context.deviceContext->spec->forwards.empty() == false) {
-        forwardInputs(action.slot, record);
+        forwardInputs(action.slot, record, false);
         continue;
       }
+    }
+    // If there is no optional inputs we canForwardEarly
+    // the messages to that parallel processing can happen.
+    // In this case we pass true to indicate that we want to
+    // copy the messages to the subsequent data processor.
+    if (context.canForwardEarly && context.deviceContext->spec->forwards.empty() == false && action.op == CompletionPolicy::CompletionOp::Consume) {
+      forwardInputs(action.slot, record, true);
     }
     markInputsAsDone(action.slot);
 
@@ -1336,8 +1400,8 @@ bool DataProcessingDevice::tryDispatchComputation(DataProcessorContext& context,
     // we keep them for next message arriving.
     if (action.op == CompletionPolicy::CompletionOp::Consume) {
       context.registry->postDispatchingCallbacks(processContext);
-      if (context.deviceContext->spec->forwards.empty() == false) {
-        forwardInputs(action.slot, record);
+      if ((context.canForwardEarly == false) && context.deviceContext->spec->forwards.empty() == false) {
+        forwardInputs(action.slot, record, false);
       }
 #ifdef TRACY_ENABLE
       cleanupRecord(record);

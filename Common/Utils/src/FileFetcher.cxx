@@ -20,6 +20,8 @@
 #include <memory>
 #include <thread>
 #include <chrono>
+#include <cstdlib>
+#include <locale>
 #include <boost/process.hpp>
 
 using namespace o2::utils;
@@ -38,22 +40,27 @@ FileFetcher::FileFetcher(const std::string& input, const std::string& selRegex, 
   if (!remRegex.empty()) {
     mRemRegex = std::make_unique<std::regex>(remRegex);
   }
+  mNoRemoteCopy = mCopyCmd == "no-copy";
+
   // parse input list
   mCopyDirName = o2::utils::Str::create_unique_path(mCopyDirName, 8);
   processInput(input);
   LOGP(INFO, "Input contains {} files, {} remote", getNFiles(), mNRemote);
   if (mNRemote) {
-    // make sure the copy command is provided
-    if (mCopyCmd.find("?src") == std::string::npos || mCopyCmd.find("?dst") == std::string::npos) {
-      throw std::runtime_error(fmt::format("remote files asked but copy cmd \"{}\" is not valid", mCopyCmd));
+    if (mNoRemoteCopy) { // make sure the copy command is provided, unless copy was explicitly forbidden
+      LOGP(INFO, "... but their local copying is explicitly forbidden");
+    } else {
+      if (mCopyCmd.find("?src") == std::string::npos || mCopyCmd.find("?dst") == std::string::npos) {
+        throw std::runtime_error(fmt::format("remote files asked but copy cmd \"{}\" is not valid", mCopyCmd));
+      }
+      try {
+        fs::create_directories(mCopyDirName);
+      } catch (...) {
+        throw std::runtime_error(fmt::format("failed to create scratch directory {}", mCopyDirName));
+      }
+      mCopyCmdLogFile = fmt::format("{}/{}", mCopyDirName, "copy-cmd.log");
+      LOGP(INFO, "FileFetcher tmp scratch directory is set to {}", mCopyDirName);
     }
-    try {
-      fs::create_directories(mCopyDirName);
-    } catch (...) {
-      throw std::runtime_error(fmt::format("failed to create scratch directory {}", mCopyDirName));
-    }
-    mCopyCmdLogFile = fmt::format("{}/{}", mCopyDirName, "copy-cmd.log");
-    LOGP(INFO, "FileFetcher tmp scratch directory is set to {}", mCopyDirName);
   }
 }
 
@@ -121,7 +128,7 @@ void FileFetcher::processDirectory(const std::string& name)
 bool FileFetcher::addInputFile(const std::string& fname)
 {
   if (mRemRegex && std::regex_match(fname, *mRemRegex.get())) {
-    mInputFiles.emplace_back(FileRef{fname, createCopyName(fname), true, false});
+    mInputFiles.emplace_back(FileRef{fname, mNoRemoteCopy ? fname : createCopyName(fname), true, false});
     mNRemote++;
   } else if (fs::exists(fname)) { // local file
     mInputFiles.emplace_back(FileRef{fname, "", false, false});
@@ -223,6 +230,25 @@ void FileFetcher::fetcher()
   // data fetching/copying thread
   size_t fileEntry = -1ul;
 
+  if (!getNFiles()) {
+    mRunning = false;
+    return;
+  }
+
+  // BOOST requires a locale set
+  try {
+    std::locale loc("");
+  } catch (const std::exception& e) {
+    setenv("LC_ALL", "C", 1);
+    try {
+      std::locale loc("");
+      LOG(INFO) << "Setting locale";
+    } catch (const std::exception& e) {
+      LOG(INFO) << "Setting locale failed: " << e.what();
+      return;
+    }
+  }
+
   while (mRunning) {
     mNLoops = mNFilesProc / getNFiles();
     if (mNLoops > mMaxLoops) {
@@ -241,7 +267,7 @@ void FileFetcher::fetcher()
     }
     mNFilesProc++;
     auto& fileRef = mInputFiles[fileEntry];
-    if (fileRef.copied || !fileRef.remote) {
+    if (fileRef.copied || !fileRef.remote || mNoRemoteCopy) {
       mQueue.push(fileEntry);
       mNFilesProcOK++;
     } else { // need to copy

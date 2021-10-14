@@ -21,6 +21,9 @@ void ErrorTypeFEE::PrintStream(std::ostream& stream) const
     case ErrorSource_t::ALTRO_ERROR:
       typestring = "decode error";
       break;
+    case ErrorSource_t::MINOR_ALTRO_ERROR:
+      typestring = "decode error";
+      break;
     case ErrorSource_t::FIT_ERROR:
       typestring = "fit error";
       break;
@@ -29,6 +32,9 @@ void ErrorTypeFEE::PrintStream(std::ostream& stream) const
       break;
     case ErrorSource_t::GEOMETRY_ERROR:
       typestring = "geometry error";
+      break;
+    case ErrorTypeFEE::GAIN_ERROR:
+      typestring = "gain type error";
       break;
     case ErrorSource_t::UNDEFINED:
       typestring = "unknown error";

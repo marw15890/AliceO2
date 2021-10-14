@@ -40,7 +40,7 @@
 #include "CommonUtils/ConfigurableParam.h"
 #include "DataFormatsMCH/ROFRecord.h"
 #include "DataFormatsMCH/TrackMCH.h"
-#include "MCHBase/ClusterBlock.h"
+#include "DataFormatsMCH/ClusterBlock.h"
 #include "MCHTracking/TrackParam.h"
 #include "MCHTracking/Cluster.h"
 #include "MCHTracking/Track.h"
@@ -133,7 +133,8 @@ class TrackFinderTask
       // fill the ouput messages
       int trackOffset(mchTracks.size());
       writeTracks(tracks, mchTracks, usedClusters);
-      trackROFs.emplace_back(clusterROF.getBCData(), trackOffset, mchTracks.size() - trackOffset);
+      trackROFs.emplace_back(clusterROF.getBCData(), trackOffset, mchTracks.size() - trackOffset,
+                             clusterROF.getBCWidth());
     }
 
     LOGP(info, "Found {:3d} MCH tracks from {:4d} clusters in {:2d} ROFs",
@@ -172,10 +173,10 @@ class TrackFinderTask
 };
 
 //_________________________________________________________________________________________________
-o2::framework::DataProcessorSpec getTrackFinderSpec(const char* name)
+o2::framework::DataProcessorSpec getTrackFinderSpec(const char* specName)
 {
   return DataProcessorSpec{
-    name,
+    specName,
     Inputs{InputSpec{"clusterrofs", "MCH", "CLUSTERROFS", 0, Lifetime::Timeframe},
            InputSpec{"clusters", "MCH", "GLOBALCLUSTERS", 0, Lifetime::Timeframe}},
     Outputs{OutputSpec{{"trackrofs"}, "MCH", "TRACKROFS", 0, Lifetime::Timeframe},

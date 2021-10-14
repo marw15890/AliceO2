@@ -17,6 +17,7 @@
 
 #include <map>
 #include <TObject.h>
+#include <gsl/gsl>
 
 namespace o2
 {
@@ -35,11 +36,16 @@ class Diagnostic
   int getFrequency(ULong64_t pattern);                                                    // Get frequency
   int getFrequencyROW() { return getFrequency(0); }                                       // Readout window frequency
   int getFrequencyEmptyCrate(int crate) { return getFrequency(getEmptyCrateKey(crate)); } // empty crate frequency
+  int fillNoisy(int channel, int frequency = 1) { return fill(getNoisyChannelKey(channel), frequency); }
   int fillROW() { return fill(0); }
   int fillEmptyCrate(int crate, int frequency = 1) { return fill(getEmptyCrateKey(crate), frequency); }
-  ULong64_t getEmptyCrateKey(int crate);
-  void print();
+  static ULong64_t getEmptyCrateKey(int crate);
+  static ULong64_t getNoisyChannelKey(int channel);
+  void print() const;
   void clear() { mVector.clear(); }
+  void fill(const Diagnostic& diag);                       // for calibration
+  void fill(const gsl::span<const o2::tof::Diagnostic>){}; // for calibration
+  void merge(const Diagnostic* prev);
 
  private:
   std::map<ULong64_t, uint32_t> mVector; // diagnostic frequency vector (key/pattern , frequency)

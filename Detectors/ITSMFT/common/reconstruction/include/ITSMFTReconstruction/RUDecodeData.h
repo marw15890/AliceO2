@@ -45,6 +45,7 @@ struct RUDecodeData {
   int nCables = 0;         // total number of cables decoded for single trigger
   int nChipsFired = 0;     // number of chips with data or with errors
   int lastChipChecked = 0; // last chips checked among nChipsFired
+  int verbosity = 0;       // verbosity level, for -1,0 print only summary data, for 1: print once every error
   GBTCalibData calibData{}; // calibration info from GBT calibration word
 
   const RUInfo* ruInfo = nullptr;
@@ -79,7 +80,9 @@ int RUDecodeData::decodeROF(const Mapping& mp)
     }
     auto cabHW = cableHWID[icab];
     auto chIdGetter = [this, &mp, cabHW](int cid) {
-      return mp.getGlobalChipID(cid, cabHW, *this->ruInfo);
+      //return mp.getGlobalChipID(cid, cabHW, *this->ruInfo);
+      auto chip = mp.getGlobalChipID(cid, cabHW, *this->ruInfo);
+      return chip;
     };
     int ret = 0;
     while ((ret = AlpideCoder::decodeChip(*chipData, cableData[icab], chIdGetter)) || chipData->isErrorSet()) { // we register only chips with hits or errors flags set

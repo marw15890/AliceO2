@@ -17,7 +17,6 @@
 #define _CTP_DIGITS_H_
 #include "DetectorsCommonDataFormats/DetID.h"
 #include "CommonDataFormat/InteractionRecord.h"
-#include "DataFormatsFT0/Digit.h"
 #include <bitset>
 #include <iosfwd>
 
@@ -53,8 +52,16 @@ struct CTPDigit {
   void printStream(std::ostream& stream) const;
   void setInputMask(gbtword80_t mask);
   void setClassMask(gbtword80_t mask);
+  bool operator==(const CTPDigit& d) const
+  {
+    return intRecord == d.intRecord && CTPInputMask == d.CTPInputMask && CTPClassMask == d.CTPClassMask;
+  }
+
   ClassDefNV(CTPDigit, 2);
 };
+
+std::ostream& operator<<(std::ostream& os, const CTPDigit& d);
+
 struct CTPInputDigit {
   o2::InteractionRecord intRecord;
   std::bitset<CTP_MAXTRIGINPPERDET> inputsMask;
@@ -63,5 +70,15 @@ struct CTPInputDigit {
   ClassDefNV(CTPInputDigit, 1)
 };
 } // namespace ctp
+
+namespace framework
+{
+template <typename T>
+struct is_messageable;
+template <>
+struct is_messageable<o2::ctp::CTPDigit> : std::true_type {
+};
+} // namespace framework
+
 } // namespace o2
 #endif //_CTP_DIGITS_H

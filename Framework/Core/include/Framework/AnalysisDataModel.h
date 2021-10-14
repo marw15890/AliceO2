@@ -769,7 +769,7 @@ DECLARE_SOA_COLUMN(GeneratorsID, generatorsID, short);       //!
 DECLARE_SOA_COLUMN(PosX, posX, float);                       //! X vertex position in cm
 DECLARE_SOA_COLUMN(PosY, posY, float);                       //! Y vertex position in cm
 DECLARE_SOA_COLUMN(PosZ, posZ, float);                       //! Z vertex position in cm
-DECLARE_SOA_COLUMN(T, t, float);                             //! Collision time
+DECLARE_SOA_COLUMN(T, t, float);                             //! Collision time relative to given bc in ns
 DECLARE_SOA_COLUMN(Weight, weight, float);                   //! MC weight
 DECLARE_SOA_COLUMN(ImpactParameter, impactParameter, float); //! Impact parameter for A-A
 } // namespace mccollision
@@ -875,6 +875,16 @@ DECLARE_SOA_COLUMN(McMask, mcMask, uint8_t);
 DECLARE_SOA_TABLE(McMFTTrackLabels, "AOD", "MCMFTTRACKLABEL", //! Table joined to the mft track table containing the MC index
                   mcmfttracklabel::McParticleId, mcmfttracklabel::McMask);
 using McMFTTrackLabel = McMFTTrackLabels::iterator;
+
+namespace mcfwdtracklabel
+{
+DECLARE_SOA_INDEX_COLUMN(McParticle, mcParticle); //! MC particle
+DECLARE_SOA_COLUMN(McMask, mcMask, uint8_t);
+} // namespace mcfwdtracklabel
+
+DECLARE_SOA_TABLE(McFwdTrackLabels, "AOD", "MCFWDTRACKLABEL", //! Table joined to the mft track table containing the MC index
+                  mcfwdtracklabel::McParticleId, mcfwdtracklabel::McMask);
+using McFwdTrackLabel = McFwdTrackLabels::iterator;
 
 namespace mccalolabel
 {
