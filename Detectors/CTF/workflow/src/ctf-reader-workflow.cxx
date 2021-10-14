@@ -36,6 +36,7 @@
 #include "PHOSWorkflow/EntropyDecoderSpec.h"
 #include "CPVWorkflow/EntropyDecoderSpec.h"
 #include "ZDCWorkflow/EntropyDecoderSpec.h"
+#include "CTPWorkflow/EntropyDecoderSpec.h"
 
 using namespace o2::framework;
 using DetID = o2::detectors::DetID;
@@ -51,7 +52,7 @@ void customize(std::vector<o2::framework::ConfigParamSpec>& workflowOptions)
   options.push_back(ConfigParamSpec{"max-tf", VariantType::Int, -1, {"max CTFs to process (<= 0 : infinite)"}});
   options.push_back(ConfigParamSpec{"loop", VariantType::Int, 0, {"loop N times (infinite for N<0)"}});
   options.push_back(ConfigParamSpec{"delay", VariantType::Float, 0.f, {"delay in seconds between consecutive TFs sending"}});
-  options.push_back(ConfigParamSpec{"copy-cmd", VariantType::String, "XrdSecPROTOCOL=sss,unix xrdcp -N root://eosaliceo2.cern.ch/?src ?dst", {"copy command for remote files"}});
+  options.push_back(ConfigParamSpec{"copy-cmd", VariantType::String, "XrdSecPROTOCOL=sss,unix xrdcp -N root://eosaliceo2.cern.ch/?src ?dst", {"copy command for remote files or no-copy to avoid copying"}});
   options.push_back(ConfigParamSpec{"ctf-file-regex", VariantType::String, ".*o2_ctf_run.+\\.root$", {"regex string to identify CTF files"}});
   options.push_back(ConfigParamSpec{"remote-regex", VariantType::String, "^/eos/aliceo2/.+", {"regex string to identify remote files"}});
   options.push_back(ConfigParamSpec{"max-cached-files", VariantType::Int, 3, {"max CTF files queued (copied for remote source)"}});
@@ -152,6 +153,9 @@ WorkflowSpec defineDataProcessing(ConfigContext const& configcontext)
   }
   if (ctfInput.detMask[DetID::HMP]) {
     specs.push_back(o2::hmpid::getEntropyDecoderSpec());
+  }
+  if (ctfInput.detMask[DetID::CTP]) {
+    specs.push_back(o2::ctp::getEntropyDecoderSpec());
   }
 
   return std::move(specs);

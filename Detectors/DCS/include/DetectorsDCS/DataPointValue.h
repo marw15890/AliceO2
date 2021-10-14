@@ -391,6 +391,8 @@ struct alignas(64) DataPointValue final {
       case DPVAL_INT:
       case RAW_UINT:
       case DPVAL_UINT:
+      case RAW_FLOAT:
+      case DPVAL_FLOAT:
         this->payload_pt1 = data[0] & 0x00000000FFFFFFFF;
         break;
       case RAW_BOOL:
@@ -462,7 +464,7 @@ struct alignas(64) DataPointValue final {
   {
 #if defined(__linux__) || defined(__APPLE__)
     // time_t should be uint64_t (compatible) on 64-bit Linux platforms:
-    char buffer[17];
+    char buffer[33];
     std::time_t ts((uint64_t)sec);
     std::strftime(buffer, 32, "%FT%T", std::gmtime(&ts));
     std::ostringstream oss;

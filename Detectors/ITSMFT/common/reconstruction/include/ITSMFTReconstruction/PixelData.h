@@ -18,6 +18,7 @@
 #include "CommonDataFormat/InteractionRecord.h"
 #include "ITSMFTReconstruction/DecodingStat.h"
 
+#include <string>
 #include <vector>
 #include <utility>
 #include <cstdint>
@@ -99,6 +100,8 @@ class ChipPixelData
 {
 
  public:
+  // total number of raw data bytes to save in case of error and number of bytes (if any) after problematic one
+  static constexpr size_t MAXDATAERRBYTES = 16, MAXDATAERRBYTES_AFTER = 2;
   ChipPixelData() = default;
   ~ChipPixelData() = default;
   uint8_t getROFlags() const { return mROFlags; }
@@ -120,17 +123,31 @@ class ChipPixelData
   void setTrigger(uint32_t t) { mTrigger = t; }
 
   void setError(ChipStat::DecErrors i) { mErrors |= 0x1 << i; }
+  void addErrorInfo(uint64_t b) { mErrorInfo |= b; }
   void setErrorFlags(uint32_t f) { mErrors |= f; }
   bool isErrorSet(ChipStat::DecErrors i) const { return mErrors & (0x1 << i); }
   bool isErrorSet() const { return mErrors != 0; }
-  uint32_t getErrorFlags() const { return mErrors; }
+  auto getErrorFlags() const { return mErrors; }
+  auto getErrorInfo() const { return mErrorInfo; }
+  auto getNBytesInRawBuff() const { return int(mErrorInfo >> 32) & 0xff; }
+  void setNBytesInRawBuff(int n) { mErrorInfo |= (uint64_t(n & 0xff)) << 32; }
+  auto& getRawErrBuff() { return mRawBuff; }
+  auto& getRawErrBuff() const { return mRawBuff; }
+  std::string getErrorDetails(int pos) const;
+
+  void resetChipID()
+  {
+    mChipID = -1;
+  }
 
   void clear()
   {
+    resetChipID();
     mPixels.clear();
     mROFlags = 0;
     mFirstUnmasked = 0;
     mErrors = 0;
+    mErrorInfo = 0;
   }
 
   void swap(ChipPixelData& other)
@@ -226,15 +243,17 @@ class ChipPixelData
   void print() const;
 
  private:
-  uint8_t mROFlags = 0;                          // readout flags from the chip trailer
-  uint16_t mChipID = 0;                          // chip id within the detector
-  uint32_t mROFrame = 0;                         // readout frame ID
-  uint32_t mFirstUnmasked = 0;                   // first unmasked entry in the mPixels
-  uint32_t mStartID = 0;                         // entry of the 1st pixel data in the whole detector data, for MCtruth access
-  uint32_t mTrigger = 0;                         // trigger pattern
-  uint32_t mErrors = 0;                          // errors set during decoding
-  o2::InteractionRecord mInteractionRecord = {}; // interaction record
-  std::vector<PixelData> mPixels;                // vector of pixeld
+  uint8_t mROFlags = 0;                            // readout flags from the chip trailer
+  uint16_t mChipID = 0;                            // chip id within the detector
+  uint32_t mROFrame = 0;                           // readout frame ID
+  uint32_t mFirstUnmasked = 0;                     // first unmasked entry in the mPixels
+  uint32_t mStartID = 0;                           // entry of the 1st pixel data in the whole detector data, for MCtruth access
+  uint32_t mTrigger = 0;                           // trigger pattern
+  uint32_t mErrors = 0;                            // errors set during decoding
+  uint64_t mErrorInfo = 0;                         // optional extra info on the error
+  std::array<uint8_t, MAXDATAERRBYTES> mRawBuff{}; // buffer for raw data showing an error
+  o2::InteractionRecord mInteractionRecord = {};   // interaction record
+  std::vector<PixelData> mPixels;                  // vector of pixeld
 
   ClassDefNV(ChipPixelData, 1);
 };

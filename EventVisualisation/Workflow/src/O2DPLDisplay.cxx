@@ -13,27 +13,27 @@
 /// \author Julian Myrcha
 
 #include "EveWorkflow/O2DPLDisplay.h"
-#include "EveWorkflow/EveConfiguration.h"
-#include "EveWorkflow/FileProducer.h"
 #include "EveWorkflow/EveWorkflowHelper.h"
-#include "EventVisualisationDataConverter/VisualisationTrack.h"
-#include "EventVisualisationDataConverter/VisualisationEvent.h"
-
 #include "DetectorsBase/GeometryManager.h"
+#include "DetectorsBase/Propagator.h"
 #include "DataFormatsParameters/GRPObject.h"
 #include "DataFormatsGlobalTracking/RecoContainer.h"
 #include "DataFormatsTPC/WorkflowHelper.h"
 #include "DataFormatsITSMFT/TopologyDictionary.h"
 #include "DetectorsCommonDataFormats/NameConf.h"
-#include "DetectorsBase/Propagator.h"
-#include "Framework/ConfigParamSpec.h"
-#include "GlobalTrackingWorkflowHelpers/InputHelper.h"
 #include "ITSBase/GeometryTGeo.h"
+#include "ITSMFTReconstruction/ClustererParam.h"
 #include "TRDBase/GeometryFlat.h"
 #include "TOFBase/Geo.h"
 #include "TPCFastTransform.h"
 #include "TRDBase/Geometry.h"
-
+#include "GlobalTrackingWorkflowHelpers/InputHelper.h"
+#include "ReconstructionDataFormats/GlobalTrackID.h"
+#include "Framework/ConfigParamSpec.h"
+#include "DataFormatsMCH/TrackMCH.h"
+#include "DataFormatsMCH/ROFRecord.h"
+#include "DataFormatsMCH/ClusterBlock.h"
+#include "MCHTracking/TrackParam.h"
 #include <unistd.h>
 #include <climits>
 
@@ -63,8 +63,8 @@ void customize(std::vector<ConfigParamSpec>& workflowOptions)
 
   std::swap(workflowOptions, options);
 }
-#include "Framework/runDataProcessing.h"
 
+#include "Framework/runDataProcessing.h" // main method must be included here (otherwise customize not used)
 void O2DPLDisplaySpec::init(InitContext& ic)
 {
   const auto grp = o2::parameters::GRPObject::loadFrom();
@@ -81,8 +81,26 @@ void O2DPLDisplaySpec::init(InitContext& ic)
   mTrdGeo.reset(new o2::trd::GeometryFlat(*gm));
   mConfig->configCalib.trdGeometry = mTrdGeo.get();
 
-  mITSDict = std::make_unique<o2::itsmft::TopologyDictionary>();
-  mConfig->configCalib.itsPatternDict = mITSDict.get();
+  std::string dictFileITS = o2::itsmft::ClustererParam<o2::detectors::DetID::ITS>::Instance().dictFilePath;
+  dictFileITS = o2::base::NameConf::getAlpideClusterDictionaryFileName(o2::detectors::DetID::ITS, dictFileITS, "bin");
+  if (o2::utils::Str::pathExists(dictFileITS)) {
+    mITSDict.readBinaryFile(dictFileITS);
+    LOG(INFO) << "Running with provided ITS clusters dictionary: " << dictFileITS;
+  } else {
+    LOG(INFO) << "Dictionary " << dictFileITS << " is absent, ITS expects cluster patterns for all clusters";
+  }
+  mConfig->configCalib.itsPatternDict = &mITSDict;
+
+  std::string dictFileMFT = o2::itsmft::ClustererParam<o2::detectors::DetID::MFT>::Instance().dictFilePath;
+  dictFileMFT = o2::base::NameConf::getAlpideClusterDictionaryFileName(o2::detectors::DetID::MFT, dictFileMFT, "bin");
+  if (o2::utils::Str::pathExists(dictFileMFT)) {
+    mMFTDict.readBinaryFile(dictFileMFT);
+    LOG(INFO) << "Running with provided MFT clusters dictionary: " << dictFileMFT;
+  } else {
+    LOG(INFO) << "Dictionary " << dictFileMFT << " is absent, MFT expects cluster patterns for all clusters";
+  }
+  mConfig->configCalib.mftPatternDict = &mMFTDict;
+
   mConfig->configProcessing.runMC = mUseMC;
 
   o2::tof::Geo::Init();
@@ -94,43 +112,6 @@ void O2DPLDisplaySpec::init(InitContext& ic)
                              o2::math_utils::TransformType::T2L));
 }
 
-using GID = o2::dataformats::GlobalTrackID;
-using PNT = std::array<float, 3>;
-std::vector<PNT> getTrackPoints(const o2::track::TrackPar& trc, float minR, float maxR, float maxStep)
-
-{
-  // prepare space points from the track param
-  std::vector<PNT> pnts;
-  int nSteps = std::max(2, int((maxR - minR) / maxStep));
-  const auto prop = o2::base::Propagator::Instance();
-  float xMin = trc.getX(), xMax = maxR * maxR - trc.getY() * trc.getY();
-  if (xMax > 0) {
-    xMax = std::sqrt(xMax);
-  }
-  LOG(INFO) << "R: " << minR << " " << maxR << " || X: " << xMin << " " << xMax;
-  float dx = (xMax - xMin) / nSteps;
-  auto tp = trc;
-  float dxmin = std::abs(xMin - tp.getX()), dxmax = std::abs(xMax - tp.getX());
-  bool res = false;
-  if (dxmin > dxmax) { //start from closest end
-    std::swap(xMin, xMax);
-    dx = -dx;
-  }
-  if (!prop->propagateTo(tp, xMin, false, 0.99, maxStep, o2::base::PropagatorF::MatCorrType::USEMatCorrNONE)) {
-    return pnts;
-  }
-  auto xyz = tp.getXYZGlo();
-  pnts.emplace_back(PNT{xyz.X(), xyz.Y(), xyz.Z()});
-  for (int is = 0; is < nSteps; is++) {
-    if (!prop->propagateTo(tp, tp.getX() + dx, false, 0.99, 999., o2::base::PropagatorF::MatCorrType::USEMatCorrNONE)) {
-      return pnts;
-    }
-    xyz = tp.getXYZGlo();
-    pnts.emplace_back(PNT{xyz.X(), xyz.Y(), xyz.Z()});
-  }
-  return pnts;
-}
-
 void O2DPLDisplaySpec::run(ProcessingContext& pc)
 {
   if (!this->mEveHostNameMatch) {
@@ -138,54 +119,26 @@ void O2DPLDisplaySpec::run(ProcessingContext& pc)
   }
 
   // filtering out any run which occur before reaching next time interval
-  std::chrono::time_point<std::chrono::high_resolution_clock> currentTime = std::chrono::high_resolution_clock::now();
+  auto currentTime = std::chrono::high_resolution_clock::now();
   std::chrono::duration<double> elapsed = currentTime - this->mTimeStamp;
   if (elapsed < this->mTimeInteval) {
     return; // skip this run - it is too often
   }
   this->mTimeStamp = currentTime;
 
-  o2::globaltracking::RecoContainer recoData;
-  recoData.collectData(pc, *mDataRequest);
-  auto cnt = EveWorkflowHelper::compute(recoData, &(mConfig->configCalib), mClMask, mTrkMask, mTrkMask);
+  EveWorkflowHelper helper;
 
-  std::cout << cnt->globalTracks.size() << std::endl;
-  o2::event_visualisation::VisualisationEvent vEvent;
-  int trackCount = cnt->globalTracks.size(); // how many tracks should be stored
-  if (this->mNumberOfTracks != -1 && this->mNumberOfTracks < trackCount) {
-    trackCount = this->mNumberOfTracks; // less than available
-  }
+  helper.getRecoContainer().collectData(pc, *mDataRequest);
 
-  for (unsigned int i = 0; i < trackCount; i++) {
-    auto tr = cnt->globalTracks[i];
-    std::cout << tr->getX() << std::endl;
-    float rMax = 385;
-    float rMin = std::sqrt(tr->getX() * tr->getX() + tr->getY() * tr->getY());
-    auto pnts = getTrackPoints(*tr, rMin, rMax, 4.0);
+  helper.selectTracks(&(mConfig->configCalib), mClMask, mTrkMask, mTrkMask);
 
-    o2::event_visualisation::VisualisationTrack* vTrack = vEvent.addTrack({.charge = 0,
-                                                                           .energy = 0.0,
-                                                                           .ID = 0,
-                                                                           .PID = 0,
-                                                                           .mass = 0.0,
-                                                                           .signedPT = 0.0,
-                                                                           .startXYZ = {0, 0, 0},
-                                                                           .endXYZ = {0, 0, 0},
-                                                                           .pxpypz = {0, 0, 0},
-                                                                           .parentID = 0,
-                                                                           .phi = 0.0,
-                                                                           .theta = 0.0,
-                                                                           .helixCurvature = 0.0,
-                                                                           .type = 0,
-                                                                           .source = CosmicSource});
-    float dz = 0.0;
-    for (size_t ip = 0; ip < pnts.size(); ip++) {
-      vTrack->addPolyPoint(pnts[ip][0], pnts[ip][1], pnts[ip][2] + dz);
-    }
-  }
+  helper.prepareITSClusters(mITSDict);
+  helper.prepareMFTClusters(mMFTDict);
 
-  FileProducer producer(this->mJsonPath, this->mNumberOfFiles);
-  vEvent.toFile(producer.newFileName());
+  helper.draw(this->mJsonPath, this->mNumberOfFiles, this->mNumberOfTracks);
+  const auto* dh = DataRefUtils::getHeader<o2::header::DataHeader*>(pc.inputs().getFirstValid(true));
+  auto endTime = std::chrono::high_resolution_clock::now();
+  LOGP(INFO, "Visualization of TF:{} at orbit {} took {} s.", dh->tfCounter, dh->firstTForbit, std::chrono::duration_cast<std::chrono::microseconds>(endTime - currentTime).count() * 1e-6);
 }
 
 void O2DPLDisplaySpec::endOfStream(EndOfStreamContext& ec)
@@ -196,10 +149,11 @@ WorkflowSpec defineDataProcessing(ConfigContext const& cfgc)
 {
   WorkflowSpec specs;
 
-  o2::conf::ConfigurableParam::updateFromString(cfgc.options().get<std::string>("configKeyValues"));
-  bool useMC = cfgc.options().get<bool>("enable-mc") && !cfgc.options().get<bool>("disable-mc");
   std::string jsonFolder = cfgc.options().get<std::string>("jsons-folder");
   std::string eveHostName = cfgc.options().get<std::string>("eve-hostname");
+  o2::conf::ConfigurableParam::updateFromString(cfgc.options().get<std::string>("configKeyValues"));
+  bool useMC = cfgc.options().get<bool>("enable-mc") && !cfgc.options().get<bool>("disable-mc");
+
   char hostname[HOST_NAME_MAX];
   gethostname(hostname, HOST_NAME_MAX);
   bool eveHostNameMatch = eveHostName.empty() || eveHostName == hostname;
@@ -208,7 +162,11 @@ WorkflowSpec defineDataProcessing(ConfigContext const& cfgc)
   if (eveDDSColIdx != -1) {
     char* colIdx = getenv("DDS_COLLECTION_INDEX");
     int myIdx = colIdx ? atoi(colIdx) : -1;
-    LOG(info) << "Restricting DPL Display to collection index, my index " << myIdx << ", enabled " << int(myIdx == eveDDSColIdx);
+    if (myIdx == eveDDSColIdx) {
+      LOG(important) << "Restricting DPL Display to collection index, my index " << myIdx << ", enabled " << int(myIdx == eveDDSColIdx);
+    } else {
+      LOG(info) << "Restricting DPL Display to collection index, my index " << myIdx << ", enabled " << int(myIdx == eveDDSColIdx);
+    }
     eveHostNameMatch &= myIdx == eveDDSColIdx;
   }
 
@@ -216,8 +174,11 @@ WorkflowSpec defineDataProcessing(ConfigContext const& cfgc)
   int numberOfFiles = cfgc.options().get<int>("number-of_files");
   int numberOfTracks = cfgc.options().get<int>("number-of_tracks");
 
-  GlobalTrackID::mask_t srcTrk = GlobalTrackID::getSourcesMask(cfgc.options().get<std::string>("display-tracks"));
-  GlobalTrackID::mask_t srcCl = GlobalTrackID::getSourcesMask(cfgc.options().get<std::string>("display-clusters"));
+  GID::mask_t allowedTracks = GID::getSourcesMask("ITS,TPC,MFT,MCH,ITS-TPC,ITS-TPC-TOF");
+  GID::mask_t allowedClusters = GID::getSourcesMask("ITS,TPC,MFT,MCH");
+
+  GlobalTrackID::mask_t srcTrk = GlobalTrackID::getSourcesMask(cfgc.options().get<std::string>("display-tracks")) & allowedTracks;
+  GlobalTrackID::mask_t srcCl = GlobalTrackID::getSourcesMask(cfgc.options().get<std::string>("display-clusters")) & allowedClusters;
   if (!srcTrk.any() && !srcCl.any()) {
     throw std::runtime_error("No input configured");
   }

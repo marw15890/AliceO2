@@ -43,7 +43,6 @@ Tracker::Tracker(o2::its::TrackerTraits* traits)
   mTrkParams.resize(1);
   mMemParams.resize(1);
   mTraits = traits;
-  mTimeFrame = mTraits->getTimeFrame();
 #ifdef CA_DEBUG
   mDebugger = new StandaloneDebugger("dbg_ITSTrackerCPU.root");
 #endif
@@ -63,19 +62,20 @@ void Tracker::clustersToTracks(std::function<void(std::string s)> logger)
   for (int iteration = 0; iteration < mTrkParams.size(); ++iteration) {
     mTraits->UpdateTrackingParameters(mTrkParams[iteration]);
 
-    total += evaluateTask(&Tracker::initialiseTimeFrame, "Context initialisation",
+    total += evaluateTask(&Tracker::initialiseTimeFrame, "Timeframe initialisation",
                           logger, iteration, mMemParams[iteration], mTrkParams[iteration]);
     total += evaluateTask(&Tracker::computeTracklets, "Tracklet finding", logger);
     total += evaluateTask(&Tracker::computeCells, "Cell finding", logger);
     total += evaluateTask(&Tracker::findCellsNeighbours, "Neighbour finding", logger, iteration);
     total += evaluateTask(&Tracker::findRoads, "Road finding", logger, iteration);
     total += evaluateTask(&Tracker::findTracks, "Track finding", logger);
+    total += evaluateTask(&Tracker::extendTracks, "Extending tracks", logger);
   }
 
   std::stringstream sstream;
   if (constants::DoTimeBenchmarks) {
     sstream << std::setw(2) << " - "
-            << "Vertex processing completed in: " << total << "ms" << std::endl;
+            << "Timeframe " << mTimeFrameCounter++ << " processing completed in: " << total << "ms" << std::endl;
   }
   logger(sstream.str());
 
@@ -351,6 +351,10 @@ void Tracker::findTracks()
     }
     mTimeFrame->getTracks(std::min(rofs[0], rofs[1])).emplace_back(track);
   }
+}
+
+void Tracker::extendTracks()
+{
 }
 
 bool Tracker::fitTrack(TrackITSExt& track, int start, int end, int step, const float chi2cut, const float maxQoverPt)
@@ -643,6 +647,12 @@ void Tracker::getGlobalConfiguration()
   if (tc.useMatCorrTGeo) {
     setCorrType(o2::base::PropagatorImpl<float>::MatCorrType::USEMatCorrTGeo);
   }
+}
+
+void Tracker::adoptTimeFrame(TimeFrame& tf)
+{
+  mTimeFrame = &tf;
+  mTraits->adoptTimeFrame(&tf);
 }
 
 } // namespace its

@@ -17,6 +17,7 @@ o2_add_library(GlobalTrackingWorkflowHelpers
                                       O2::ITSWorkflow
                                       O2::ITSMFTWorkflow
                                       O2::MCHWorkflow
+                                      O2::MIDWorkflow
                                       O2::MFTWorkflow
                                       O2::TPCWorkflow
                                       O2::GlobalTrackingWorkflowReaders
@@ -27,11 +28,15 @@ o2_add_library(GlobalTrackingWorkflowHelpers
                                       O2::ZDCWorkflow
                                       O2::ITSMFTWorkflow
                                       O2::TRDWorkflowIO
+                                      O2::CTPWorkflowIO
                                       O2::TPCReaderWorkflow
+                                      O2::PHOSWorkflow
+                                      O2::CPVWorkflow
+                                      O2::EMCALWorkflow
                                       O2::SimulationDataFormat)
 
 o2_add_executable(track-cluster-reader
         COMPONENT_NAME global
         TARGETVARNAME targetName
         SOURCES src/GlobalTrackClusterReader.cxx
-        PUBLIC_LINK_LIBRARIES O2::GlobalTrackingWorkflowHelpers)
+        PUBLIC_LINK_LIBRARIES O2::GlobalTrackingWorkflowHelpers O2::DetectorsRaw)

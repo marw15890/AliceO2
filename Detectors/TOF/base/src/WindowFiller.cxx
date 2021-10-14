@@ -108,7 +108,9 @@ void WindowFiller::reset()
 //______________________________________________________________________
 void WindowFiller::fillDigitsInStrip(std::vector<Strip>* strips, int channel, int tdc, int tot, uint64_t nbc, UInt_t istrip, uint32_t triggerorbit, uint16_t triggerbunch)
 {
-  (*strips)[istrip].addDigit(channel, tdc, tot, nbc, 0, triggerorbit, triggerbunch);
+  if (channel > -1) { // check channel validity
+    (*strips)[istrip].addDigit(channel, tdc, tot, nbc, 0, triggerorbit, triggerbunch);
+  }
 }
 //______________________________________________________________________
 void WindowFiller::addCrateHeaderData(unsigned long orbit, int crate, int32_t bc, uint32_t eventCounter)
@@ -473,6 +475,19 @@ void WindowFiller::fillDiagnosticFrequency()
           }
         }
       }
+    }
+  }
+
+  // fill also noise diagnostic if the counts within the TF is larger than a threashold (default >=11, -> 1 kHZ)
+  int masknoise = mMaskNoiseRate;
+  if (masknoise < 0) {
+    masknoise = -masknoise;
+  }
+
+  for (int i = 0; i < Geo::NCHANNELS; i++) {
+    if (mChannelCounts[i] >= masknoise) {
+      //Fill noisy in diagnostic
+      mDiagnosticFrequency.fillNoisy(i);
     }
   }
 }

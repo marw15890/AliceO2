@@ -195,6 +195,12 @@ auto createInfoLoggerSinkHelper(InfoLogger* logger, InfoLoggerContext* ctx)
     } else if (metadata.severity_name == fair::Logger::SeverityName(fair::Severity::error)) {
       severity = InfoLogger::Severity::Error;
       level = 3;
+    } else if (metadata.severity_name == fair::Logger::SeverityName(fair::Severity::alarm)) {
+      severity = InfoLogger::Severity::Warning;
+      level = 4;
+    } else if (metadata.severity_name == fair::Logger::SeverityName(fair::Severity::important)) {
+      severity = InfoLogger::Severity::Info;
+      level = 5;
     } else if (metadata.severity_name == fair::Logger::SeverityName(fair::Severity::warn)) {
       severity = InfoLogger::Severity::Warning;
       level = 6;
@@ -483,7 +489,7 @@ auto flushMetrics(ServiceRegistry& registry, DataProcessingStats& stats) -> void
   for (size_t si = 0; si < stats.statesSize.load(); ++si) {
     auto value = std::atomic_load_explicit(&stats.relayerState[si], std::memory_order_relaxed);
     std::atomic_thread_fence(std::memory_order_acquire);
-    monitoring.send({value, fmt::format("data_relayer/{}", si)});
+    monitoring.send({value, fmt::format("data_relayer/{}", si), o2::monitoring::Verbosity::Debug});
   }
   relayer.sendContextState();
   monitoring.flushBuffer();

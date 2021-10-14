@@ -32,7 +32,7 @@
 
 #include "DataFormatsMCH/ROFRecord.h"
 #include "DataFormatsMCH/TrackMCH.h"
-#include "MCHBase/ClusterBlock.h"
+#include "DataFormatsMCH/ClusterBlock.h"
 #include "MCHTracking/TrackParam.h"
 #include "MCHTracking/Cluster.h"
 #include "MCHTracking/Track.h"
@@ -119,7 +119,7 @@ class TrackFitterTask
       }
 
       // write the current ROF with references to the associated tracks
-      rofsOut.emplace_back(rof.getBCData(), trackOffset, tracksOut.size() - trackOffset);
+      rofsOut.emplace_back(rof.getBCData(), trackOffset, tracksOut.size() - trackOffset, rof.getBCWidth());
     }
   }
 
@@ -128,10 +128,10 @@ class TrackFitterTask
 };
 
 //_________________________________________________________________________________________________
-o2::framework::DataProcessorSpec getTrackFitterSpec()
+o2::framework::DataProcessorSpec getTrackFitterSpec(const char* specName)
 {
   return DataProcessorSpec{
-    "TrackFitter",
+    specName,
     Inputs{InputSpec{"rofsin", "MCH", "TRACKROFSIN", 0, Lifetime::Timeframe},
            InputSpec{"tracksin", "MCH", "TRACKSIN", 0, Lifetime::Timeframe},
            InputSpec{"clustersin", "MCH", "TRACKCLUSTERSIN", 0, Lifetime::Timeframe}},

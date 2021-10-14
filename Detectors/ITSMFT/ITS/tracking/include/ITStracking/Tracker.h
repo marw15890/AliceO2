@@ -66,6 +66,7 @@ class Tracker
   Tracker& operator=(const Tracker&) = delete;
   ~Tracker();
 
+  void adoptTimeFrame(TimeFrame& tf);
   void setBz(float bz);
   float getBz() const;
 
@@ -75,8 +76,6 @@ class Tracker
 
   std::vector<TrackITSExt>& getTracks();
 
-  void setROFrame(std::uint32_t f) { mROFrame = f; }
-  std::uint32_t getROFrame() const { return mROFrame; }
   void setCorrType(const o2::base::PropagatorImpl<float>::MatCorrType& type) { mCorrType = type; }
   void setParameters(const std::vector<MemoryParameters>&, const std::vector<TrackingParameters>&);
   void getGlobalConfiguration();
@@ -92,6 +91,7 @@ class Tracker
   void findCellsNeighbours(int& iteration);
   void findRoads(int& iteration);
   void findTracks();
+  void extendTracks();
   bool fitTrack(TrackITSExt& track, int start, int end, int step, const float chi2cut = o2::constants::math::VeryBig, const float maxQoverPt = o2::constants::math::VeryBig);
   void traverseCellsTree(const int, const int);
   void computeRoadsMClabels();
@@ -111,7 +111,7 @@ class Tracker
   bool mApplySmoothing = false;
   o2::base::PropagatorImpl<float>::MatCorrType mCorrType = o2::base::PropagatorImpl<float>::MatCorrType::USEMatCorrLUT;
   float mBz = 5.f;
-  std::uint32_t mROFrame = 0;
+  std::uint32_t mTimeFrameCounter = 0;
   o2::gpu::GPUChainITS* mRecoChain = nullptr;
 
 #ifdef CA_DEBUG

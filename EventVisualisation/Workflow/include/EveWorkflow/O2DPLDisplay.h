@@ -17,9 +17,12 @@
 #define ALICE_O2_EVENTVISUALISATION_WORKFLOW_O2DPLDISPLAY_H
 
 #include "ReconstructionDataFormats/GlobalTrackID.h"
+#include "DataFormatsGlobalTracking/RecoContainer.h"
 #include "EveWorkflow/EveConfiguration.h"
 #include "Framework/Task.h"
 #include <memory>
+
+using GID = o2::dataformats::GlobalTrackID;
 
 namespace o2::trd
 {
@@ -67,9 +70,10 @@ class O2DPLDisplaySpec : public o2::framework::Task
 
   o2::dataformats::GlobalTrackID::mask_t mTrkMask;
   o2::dataformats::GlobalTrackID::mask_t mClMask;
+  o2::itsmft::TopologyDictionary mITSDict;
+  o2::itsmft::TopologyDictionary mMFTDict;
   std::unique_ptr<EveConfiguration> mConfig;
   std::unique_ptr<o2::trd::GeometryFlat> mTrdGeo;
-  std::unique_ptr<o2::itsmft::TopologyDictionary> mITSDict;
   std::shared_ptr<o2::globaltracking::DataRequest> mDataRequest;
 };
 
