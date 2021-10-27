@@ -100,22 +100,54 @@ void TrackerDPL::init(InitContext& ic)
       memParams.resize(3);
       LOG(info) << "Initializing tracker in async. phase reconstruction with " << trackParams.size() << " passes";
 
-    } else if (mMode == "sync") {
+    } else if (mMode == "sync_misaligned") {
 
       trackParams.resize(1);
+      trackParams[0].PhiBins = 32;
+      trackParams[0].ZBins = 64;
+      trackParams[0].TrackletMaxDeltaPhi *= 4;
+      for (float& dZ : trackParams[0].TrackletMaxDeltaZ) {
+        dZ = std::hypot(dZ, 0.3);
+      }
+      trackParams[0].CellMaxDeltaPhi = 0.5;
+      for (float& dca : trackParams[0].CellMaxDCA) {
+        dca = std::hypot(dca, 1.);
+      }
+      for (float& dca : trackParams[0].CellMaxDeltaZ) {
+        dca = std::hypot(dca, 1.);
+      }
+      trackParams[0].CellMaxDeltaTanLambda = 0.2;
+      for (int iLayer = 0; iLayer < 4; ++iLayer) {
+        trackParams[0].NeighbourMaxDeltaCurvature[iLayer] *= 16;
+        trackParams[0].NeighbourMaxDeltaN[iLayer] *= 16;
+      }
+      trackParams[0].FitIterationMaxChi2[0] = 1.e28;
+      trackParams[0].FitIterationMaxChi2[1] = 1.e28;
+      trackParams[0].MinTrackLength = 4;
       memParams.resize(1);
-      LOG(info) << "Initializing tracker in sync. phase reconstruction with " << trackParams.size() << " passes";
+      LOG(info) << "Initializing tracker in misaligned sync. phase reconstruction with " << trackParams.size() << " passes";
 
+    } else if (mMode == "sync") {
+      memParams.resize(1);
+      trackParams.resize(1);
+      LOG(info) << "Initializing tracker in sync. phase reconstruction with " << trackParams.size() << " passes";
     } else if (mMode == "cosmics") {
       mRunVertexer = false;
       trackParams.resize(1);
       memParams.resize(1);
       trackParams[0].MinTrackLength = 4;
       trackParams[0].TrackletMaxDeltaPhi = o2::its::constants::math::Pi * 0.5f;
-      trackParams[0].CellMaxDeltaTanLambda = 0.3;
-      trackParams[0].CellMaxDeltaPhi = 0.3;
+      trackParams[0].CellMaxDeltaTanLambda *= 400;
+      trackParams[0].CellMaxDeltaPhi = 1.;
       trackParams[0].PhiBins = 4;
       trackParams[0].ZBins = 16;
+      trackParams[0].FitIterationMaxChi2[0] = 1.e28;
+      trackParams[0].FitIterationMaxChi2[1] = 1.e28;
+
+      for (int iLayer = 0; iLayer < 4; ++iLayer) {
+        trackParams[0].NeighbourMaxDeltaCurvature[iLayer] *= 400;
+        trackParams[0].NeighbourMaxDeltaN[iLayer] *= 400;
+      }
       for (int iLayer = 0; iLayer < o2::its::constants::its2::TrackletsPerRoad; iLayer++) {
         trackParams[0].TrackletMaxDeltaZ[iLayer] = o2::its::constants::its2::LayersZCoordinate()[iLayer + 1];
         memParams[0].TrackletsMemoryCoefficients[iLayer] = 0.5f;
@@ -212,6 +244,9 @@ void TrackerDPL::run(ProcessingContext& pc)
   auto logger = [&](std::string s) { LOG(info) << s; };
   float vertexerElapsedTime{0.f};
   int nclUsed = 0;
+
+  std::vector<bool> processingMask;
+  int cutClusterMult{0}, cutVertexMult{0}, cutTotalMult{0};
   for (auto& rof : rofspan) {
     nclUsed += ioutils::loadROFrameData(rof, event, compClusters, pattIt, mDict, labels);
     // prepare in advance output ROFRecords, even if this ROF to be rejected
@@ -222,14 +257,39 @@ void TrackerDPL::run(ProcessingContext& pc)
     vtxROF.setFirstEntry(vertices.size());       // dedicated ROFRecord
     vtxROF.setNEntries(0);
 
-    std::vector<Vertex> vtxVecLoc;
-    if (mRunVertexer) {
-      vertexerElapsedTime += mVertexer->clustersToVertices(event, false, logger);
-      vtxVecLoc = mVertexer->exportVertices();
-    } else {
-      vtxVecLoc.emplace_back(Vertex());
-      vtxVecLoc.back().setNContributors(1);
+    bool multCut = (multEstConf.cutMultClusLow <= 0 && multEstConf.cutMultClusHigh <= 0); // cut was requested
+    if (!multCut) {
+      float mult = multEst.process(rof.getROFData(compClusters));
+      multCut = mult >= multEstConf.cutMultClusLow && mult <= multEstConf.cutMultClusHigh;
+      LOG(debug) << fmt::format("ROF {} rejected by the cluster multiplicity selection [{},{}]", processingMask.size(), multEstConf.cutMultClusLow, multEstConf.cutMultClusHigh);
+      cutClusterMult += !multCut;
     }
+
+    std::vector<Vertex> vtxVecLoc;
+    if (multCut) {
+      if (mRunVertexer) {
+        vertexerElapsedTime += mVertexer->clustersToVertices(event, false, logger);
+        auto allVerts = mVertexer->exportVertices();
+        multCut = allVerts.size() == 0;
+        for (const auto& vtx : allVerts) {
+          if (vtx.getNContributors() < multEstConf.cutMultVtxLow || (multEstConf.cutMultVtxHigh > 0 && vtx.getNContributors() > multEstConf.cutMultVtxHigh)) {
+            continue; // skip vertex of unwanted multiplicity
+          }
+          multCut = true; // At least one passes the selection
+          vtxVecLoc.push_back(vtx);
+        }
+      } else {
+        vtxVecLoc.emplace_back(Vertex());
+        vtxVecLoc.back().setNContributors(1);
+      }
+
+      if (!multCut) {
+        LOG(debug) << fmt::format("ROF {} rejected by the vertex multiplicity selection [{},{}]", processingMask.size(), multEstConf.cutMultVtxLow, multEstConf.cutMultVtxHigh);
+        cutVertexMult++;
+      }
+    }
+    cutTotalMult += !multCut;
+    processingMask.push_back(multCut);
     mTimeFrame.addPrimaryVertices(vtxVecLoc);
 
     vtxROF.setNEntries(vtxVecLoc.size());
@@ -239,7 +299,13 @@ void TrackerDPL::run(ProcessingContext& pc)
     savedROF.push_back(roFrame);
     roFrame++;
   }
-  LOG(info) << " - Vertex seeding total elapsed time: " << vertexerElapsedTime << " ms for " << nclUsed << " clusters in " << rofspan.size() << " ROFs";
+
+  LOG(info) << fmt::format(" - In total, multiplicity selection rejected {}/{} ROFs", cutTotalMult, rofspan.size());
+  LOG(info) << fmt::format("\t - Cluster multiplicity selection rejected {}/{} ROFs", cutClusterMult, rofspan.size());
+  LOG(info) << fmt::format("\t - Vertex multiplicity selection rejected {}/{} ROFs", cutVertexMult, rofspan.size());
+  LOG(info) << fmt::format(" - Vertex seeding total elapsed time: {} ms for {} clusters in {} ROFs", vertexerElapsedTime, nclUsed, rofspan.size());
+
+  mTimeFrame.setMultiplicityCutMask(processingMask);
   mTracker->clustersToTracks(logger);
 
   for (unsigned int iROF{0}; iROF < rofs.size(); ++iROF) {

@@ -18,6 +18,7 @@
 
 #include <TH1F.h>
 #include <TH2F.h>
+#include <TEfficiency.h>
 #include <TObjArray.h>
 #include "DataFormatsGlobalTracking/RecoContainer.h"
 #include "Framework/ProcessingContext.h"
@@ -41,14 +42,14 @@ class MatchITSTPCQC
   void finalize();
   void reset();
   TH1F* getHistoPtTPC() const { return mPtTPC; }
-  TH1F* getHistoFractionITSTPCmatch() const { return mFractionITSTPCmatch; }
+  TEfficiency* getFractionITSTPCmatch() const { return mFractionITSTPCmatch; }
+  TEfficiency* getHistoFractionITSTPCmatch() const { return mFractionITSTPCmatch; }
   TH1F* getHistoPt() const { return mPt; }
   TH1F* getHistoEta() const { return mEta; }
   TH1F* getHistoChi2Matching() const { return mChi2Matching; }
   TH1F* getHistoChi2Refit() const { return mChi2Refit; }
   TH2F* getHistoTimeResVsPt() const { return mTimeResVsPt; }
-  void getTH1FHistos(TObjArray& objarTH1F);
-  void getTH2FHistos(TObjArray& objarTH2F);
+  void getHistos(TObjArray& objar);
   void setSources(GID::mask_t src) { mSrc = src; }
   void setUseMC(bool b) { mUseMC = b; }
   void deleteHistograms();
@@ -84,15 +85,15 @@ class MatchITSTPCQC
   float mBz = 0; ///< nominal Bz
 
   TH1F* mPtTPC = nullptr;
-  TH1F* mFractionITSTPCmatch = nullptr;
+  TEfficiency* mFractionITSTPCmatch = nullptr;
   TH1F* mPt = nullptr;
   TH1F* mEta = nullptr;
   TH1F* mChi2Matching = nullptr;
   TH1F* mChi2Refit = nullptr;
   TH2F* mTimeResVsPt = nullptr;
 
-  float mNTPCTracksInv = 1.f;
-  float mNITSTPCTracksInv = 1.f;
+  int mNTPCSelectedTracks = 0;
+  int mNITSTPCSelectedTracks = 0;
 
   // cut values
   float mPtCut = 0.1f;

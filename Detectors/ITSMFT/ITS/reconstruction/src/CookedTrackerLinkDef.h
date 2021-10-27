@@ -9,21 +9,18 @@
 // granted to it by virtue of its status as an Intergovernmental Organization
 // or submit itself to any jurisdiction.
 
-///
-/// \file    DataInterpreter.cxx
-/// \author  Jeremi Niedziela
+#ifdef __CLING__
 
-#include "EventVisualisationBase/DataInterpreter.h"
-#include "FairLogger.h"
+#pragma link off all globals;
+#pragma link off all classes;
+#pragma link off all functions;
 
-using namespace std;
+#pragma link C++ class o2::its::ClustererTask + ;
+#pragma link C++ class o2::its::CookedTracker + ;
+#pragma link C++ class o2::its::CookedConfigParam + ;
+#pragma link C++ class o2::conf::ConfigurableParamHelper < o2::its::CookedConfigParam> + ;
+#pragma link C++ class o2::its::RecoGeomHelper + ;
+#pragma link C++ class o2::its::FastMultEst + ;
+#pragma link C++ class o2::its::FastMultEstConfig + ;
 
-namespace o2
-{
-namespace event_visualisation
-{
-
-DataInterpreter* DataInterpreter::instance[EVisualisationGroup::NvisualisationGroups];
-
-} // namespace event_visualisation
-} // namespace o2
+#endif

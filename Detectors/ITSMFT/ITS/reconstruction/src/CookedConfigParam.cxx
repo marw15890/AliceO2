@@ -9,30 +9,14 @@
 // granted to it by virtue of its status as an Intergovernmental Organization
 // or submit itself to any jurisdiction.
 
-///
-/// \file    DataInterpreter.cxx
-/// \author julian.myrcha@cern.ch
-
-#include "EventVisualisationBase/DataReader.h"
-#include "FairLogger.h"
-
-using namespace std;
+#include "ITSReconstruction/CookedConfigParam.h"
 
 namespace o2
 {
-namespace event_visualisation
+namespace its
 {
+static auto& sITSCookedTrackerParam = o2::its::CookedConfigParam::Instance();
 
-DataReader::DataReader(DataInterpreter* interpreter) : mInterpreter(interpreter)
-{
-}
-
-VisualisationEvent DataReader::getEvent(int no, EVisualisationDataType dataType)
-{
-  TObject* data = this->getEventData(no);
-  VisualisationEvent event = mInterpreter->interpretDataForType(data, dataType);
-  return event;
-}
-
-} // namespace event_visualisation
+O2ParamImpl(o2::its::CookedConfigParam);
+} // namespace its
 } // namespace o2

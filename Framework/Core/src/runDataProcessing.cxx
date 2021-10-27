@@ -72,9 +72,7 @@
 
 #include "FairMQDevice.h"
 #include <fairmq/DeviceRunner.h>
-#if __has_include(<fairmq/shmem/Monitor.h>)
 #include <fairmq/shmem/Monitor.h>
-#endif
 #include "options/FairMQProgOptions.h"
 
 #include <boost/program_options.hpp>
@@ -115,6 +113,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <execinfo.h>
+// This is to allow C++20 aggregate initialisation
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
 #if defined(__linux__) && __has_include(<sched.h>)
 #include <sched.h>
 #elif __has_include(<linux/getcpu.h>)
@@ -255,7 +256,11 @@ namespace
 int calculateExitCode(DriverInfo& driverInfo, DeviceSpecs& deviceSpecs, DeviceInfos& infos)
 {
   std::regex regexp(R"(^\[([\d+:]*)\]\[\w+\] )");
-  int exitCode = 0;
+  if (!driverInfo.lastError.empty()) {
+    LOGP(ERROR, "SEVERE: DPL driver encountered an error while running.\n{}",
+         driverInfo.lastError);
+    return 1;
+  }
   for (size_t di = 0; di < deviceSpecs.size(); ++di) {
     auto& info = infos[di];
     auto& spec = deviceSpecs[di];
@@ -265,10 +270,10 @@ int calculateExitCode(DriverInfo& driverInfo, DeviceSpecs& deviceSpecs, DeviceIn
            info.pid,
            info.minFailureLevel,
            std::regex_replace(info.firstSevereError, regexp, ""));
-      exitCode = 1;
+      return 1;
     }
   }
-  return exitCode;
+  return 0;
 }
 } // namespace
 
@@ -315,19 +320,8 @@ static void handle_sigint(int)
 /// Helper to invoke shared memory cleanup
 void cleanupSHM(std::string const& uniqueWorkflowId)
 {
-#if __has_include(<fairmq/shmem/Monitor.h>)
   using namespace fair::mq::shmem;
   Monitor::Cleanup(SessionId{"dpl_" + uniqueWorkflowId}, false);
-#else
-  // Old code, invoking external fairmq-shmmonitor
-  auto shmCleanup = fmt::format("fairmq-shmmonitor --cleanup -s dpl_{} 2>&1 >/dev/null", uniqueWorkflowId);
-  LOG(debug)
-    << "Cleaning up shm memory session with " << shmCleanup;
-  auto result = system(shmCleanup.c_str());
-  if (result != 0) {
-    LOG(error) << "Unable to cleanup shared memory, run " << shmCleanup << "by hand to fix";
-  }
-#endif
 }
 
 static void handle_sigchld(int) { sigchld_requested = true; }
@@ -1010,6 +1004,18 @@ void doUnknownException(std::string const& s, char const* processName)
   }
 }
 
+[[maybe_unused]] AlgorithmSpec dryRun(DeviceSpec const& spec)
+{
+  return AlgorithmSpec{adaptStateless(
+    [&routes = spec.outputs](DataAllocator& outputs) {
+      LOG(INFO) << "Dry run enforced. Creating dummy messages to simulate computation happended";
+      for (auto& route : routes) {
+        auto concrete = DataSpecUtils::asConcreteDataMatcher(route.matcher);
+        outputs.make<int>(Output{concrete.origin, concrete.description, concrete.subSpec}, 2);
+      }
+    })};
+}
+
 void doDefaultWorkflowTerminationHook()
 {
   //LOG(INFO) << "Process " << getpid() << " is exiting.";
@@ -1099,16 +1105,6 @@ struct WorkflowInfo {
   std::vector<ConfigParamSpec> options;
 };
 
-struct GuiCallbackContext {
-  uint64_t frameLast;
-  float* frameLatency;
-  float* frameCost;
-  DebugGUI* plugin;
-  void* window;
-  bool* guiQuitRequested;
-  std::function<void(void)> callback;
-};
-
 void gui_callback(uv_timer_s* ctx)
 {
   GuiCallbackContext* gui = reinterpret_cast<GuiCallbackContext*>(ctx->data);
@@ -1156,7 +1152,9 @@ int runStateMachine(DataProcessorSpecs const& workflow,
                     boost::program_options::variables_map& varmap,
                     std::string frameworkId)
 {
-  RunningWorkflowInfo runningWorkflow;
+  RunningWorkflowInfo runningWorkflow{
+    .uniqueWorkflowId = driverInfo.uniqueWorkflowId,
+    .shmSegmentId = (int16_t)atoi(varmap["shm-segment-id"].as<std::string>().c_str())};
   DeviceInfos infos;
   DeviceControls controls;
   DevicesManager* devicesManager = new DevicesManager{controls, infos, runningWorkflow.devices};
@@ -1581,9 +1579,10 @@ int runStateMachine(DataProcessorSpecs const& workflow,
             ss << " - " << spec.name << "(" << spec.id << ")"
                << "\n";
           }
-          LOG(ERROR) << "Unable to find component with id "
-                     << frameworkId << ". Available options:\n"
-                     << ss.str();
+          driverInfo.lastError = fmt::format(
+            "Unable to find component with id {}."
+            " Available options:\n{}",
+            frameworkId, ss.str());
           driverInfo.states.push_back(DriverState::QUIT_REQUESTED);
         }
         break;
@@ -2362,7 +2361,7 @@ int doMain(int argc, char** argv, o2::framework::WorkflowSpec const& workflow,
     // configuration they get passed by their parents.
     for (auto& dp : importedWorkflow) {
       auto found = std::find_if(physicalWorkflow.begin(), physicalWorkflow.end(),
-                                [& name = dp.name](DataProcessorSpec const& spec) { return spec.name == name; });
+                                [&name = dp.name](DataProcessorSpec const& spec) { return spec.name == name; });
       if (found == physicalWorkflow.end()) {
         physicalWorkflow.push_back(dp);
         rankIndex.insert(std::make_pair(dp.name, workflowHashB));
@@ -2429,7 +2428,19 @@ int doMain(int argc, char** argv, o2::framework::WorkflowSpec const& workflow,
         if (checkDependencies(j, i)) {
           edges.emplace_back(i, j);
           if (both) {
-            throw std::runtime_error(physicalWorkflow[i].name + " has circular dependency with " + physicalWorkflow[j].name);
+            std::ostringstream str;
+            for (auto x : {i, j}) {
+              str << physicalWorkflow[x].name << ":\n";
+              str << "inputs:\n";
+              for (auto& input : physicalWorkflow[x].inputs) {
+                str << fmt::format("- {}\n", input);
+              }
+              str << "outputs:\n";
+              for (auto& output : physicalWorkflow[x].outputs) {
+                str << fmt::format("- {}\n", output);
+              }
+            }
+            throw std::runtime_error(physicalWorkflow[i].name + " has circular dependency with " + physicalWorkflow[j].name + ":\n" + str.str());
           }
         }
       }
@@ -2440,7 +2451,7 @@ int doMain(int argc, char** argv, o2::framework::WorkflowSpec const& workflow,
       throw std::runtime_error("Unable to do topological sort of the resulting workflow. Do you have loops?\n" + debugTopoInfo(physicalWorkflow, topoInfos, edges));
     }
     // Sort by layer and then by name, to ensure stability.
-    std::stable_sort(topoInfos.begin(), topoInfos.end(), [& workflow = physicalWorkflow, &rankIndex, &topoInfos](TopoIndexInfo const& a, TopoIndexInfo const& b) {
+    std::stable_sort(topoInfos.begin(), topoInfos.end(), [&workflow = physicalWorkflow, &rankIndex, &topoInfos](TopoIndexInfo const& a, TopoIndexInfo const& b) {
       auto aRank = std::make_tuple(a.layer, -workflow.at(a.index).outputs.size(), workflow.at(a.index).name);
       auto bRank = std::make_tuple(b.layer, -workflow.at(b.index).outputs.size(), workflow.at(b.index).name);
       return aRank < bRank;
@@ -2540,7 +2551,10 @@ int doMain(int argc, char** argv, o2::framework::WorkflowSpec const& workflow,
   // If the id is set, this means this is a device,
   // otherwise this is the driver.
   if (varmap.count("id")) {
-    frameworkId = varmap["id"].as<std::string>();
+    // The framework id does not want to know anything about DDS template expansion
+    // so we simply drop it. Notice that the "id" Property is still the same as the
+    // original --id option.
+    frameworkId = std::regex_replace(varmap["id"].as<std::string>(), std::regex{"_dds.*"}, "");
     driverInfo.uniqueWorkflowId = fmt::format("{}", getppid());
     driverInfo.defaultDriverClient = "stdout://";
   } else {
@@ -2563,3 +2577,4 @@ void doBoostException(boost::exception& e, char const* processName)
   LOGP(ERROR, "error while setting up workflow in {}: {}",
        processName, boost::current_exception_diagnostic_information(true));
 }
+#pragma GCC diagnostic push

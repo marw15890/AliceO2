@@ -35,6 +35,9 @@
 #include <climits>
 #include <thread>
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+
 namespace o2::framework
 {
 
@@ -332,6 +335,13 @@ void WorkflowHelpers::injectServiceDevices(WorkflowSpec& workflow, ConfigContext
             hasConditionOption = true;
           }
           requestedCCDBs.emplace_back(input);
+        } break;
+        case Lifetime::OutOfBand: {
+          auto concrete = DataSpecUtils::asConcreteDataMatcher(input);
+          auto hasOption = std::any_of(processor.options.begin(), processor.options.end(), [&input](auto const& option) { return (option.name == "out-of-band-channel-name-" + input.binding); });
+          if (hasOption == false) {
+            processor.options.push_back(ConfigParamSpec{"out-of-band-channel-name-" + input.binding, VariantType::String, "out-of-band", {"channel to listen for out of band data"}});
+          }
         } break;
         case Lifetime::QA:
         case Lifetime::Transient:
@@ -1134,4 +1144,5 @@ std::vector<InputSpec> WorkflowHelpers::computeDanglingOutputs(WorkflowSpec cons
   return results;
 }
 
+#pragma GCC diagnostic pop
 } // namespace o2::framework

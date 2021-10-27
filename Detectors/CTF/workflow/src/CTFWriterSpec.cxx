@@ -93,6 +93,7 @@ class CTFWriterSpec : public o2::framework::Task
   void init(o2::framework::InitContext& ic) final;
   void run(o2::framework::ProcessingContext& pc) final;
   void endOfStream(o2::framework::EndOfStreamContext& ec) final { finalize(); };
+  void stop() final { finalize(); };
   bool isPresent(DetID id) const { return mDets[id]; }
 
  private:
@@ -425,9 +426,12 @@ void CTFWriterSpec::run(ProcessingContext& pc)
     if (mNAccCTF > 1) {
       LOG(INFO) << "Current CTF tree has " << mNAccCTF << " entries with total size of " << mAccCTFSize << " bytes";
     }
-    if (mLockFD) {
+    if (mLockFD != -1) {
       lseek(mLockFD, 0, SEEK_SET);
-      write(mLockFD, &mAccCTFSize, sizeof(size_t));
+      auto nwr = write(mLockFD, &mAccCTFSize, sizeof(size_t));
+      if (nwr != sizeof(size_t)) {
+        LOG(ERROR) << "Failed to write current CTF size " << mAccCTFSize << " to lock file, bytes written: " << nwr;
+      }
     }
 
     if (mAccCTFSize >= mMinSize || (mMaxCTFPerFile > 0 && mNAccCTF >= mMaxCTFPerFile)) {

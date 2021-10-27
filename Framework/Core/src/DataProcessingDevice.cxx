@@ -42,6 +42,8 @@
 #include "DataProcessingHelpers.h"
 #include "DataRelayerHelpers.h"
 #include "ProcessingPoliciesHelpers.h"
+#include "Headers/DataHeader.h"
+#include "Headers/DataHeaderHelpers.h"
 
 #include "ScopedExit.h"
 
@@ -287,22 +289,6 @@ void DataProcessingDevice::Init()
 
   mExpirationHandlers.clear();
 
-  auto distinct = DataRelayerHelpers::createDistinctRouteIndex(mSpec.inputs);
-  int i = 0;
-  for (auto& di : distinct) {
-    auto& route = mSpec.inputs[di];
-    if (route.configurator.has_value() == false) {
-      i++;
-      continue;
-    }
-    ExpirationHandler handler{
-      RouteIndex{i++},
-      route.matcher.lifetime,
-      route.configurator->creatorConfigurator(mState, *mConfigRegistry),
-      route.configurator->danglingConfigurator(mState, *mConfigRegistry),
-      route.configurator->expirationConfigurator(mState, *mConfigRegistry)};
-    mExpirationHandlers.emplace_back(std::move(handler));
-  }
 
   if (mInit) {
     InitContext initContext{*mConfigRegistry, mServiceRegistry};
@@ -378,6 +364,23 @@ void on_awake_main_thread(uv_async_t* handle)
 } // namespace
 void DataProcessingDevice::InitTask()
 {
+  auto distinct = DataRelayerHelpers::createDistinctRouteIndex(mSpec.inputs);
+  int i = 0;
+  for (auto& di : distinct) {
+    auto& route = mSpec.inputs[di];
+    if (route.configurator.has_value() == false) {
+      i++;
+      continue;
+    }
+    ExpirationHandler handler{
+      RouteIndex{i++},
+      route.matcher.lifetime,
+      route.configurator->creatorConfigurator(mState, mServiceRegistry, *mConfigRegistry),
+      route.configurator->danglingConfigurator(mState, *mConfigRegistry),
+      route.configurator->expirationConfigurator(mState, *mConfigRegistry)};
+    mExpirationHandlers.emplace_back(std::move(handler));
+  }
+
   if (mState.awakeMainThread == nullptr) {
     mState.awakeMainThread = (uv_async_t*)malloc(sizeof(uv_async_t));
     mState.awakeMainThread->data = &mState;
@@ -1188,12 +1191,20 @@ bool DataProcessingDevice::tryDispatchComputation(DataProcessorContext& context,
   // FIXME: do it in a smarter way than O(N^2)
   auto forwardInputs = [&reportError,
                         &spec = context.deviceContext->spec,
-                        &device = context.deviceContext->device, &currentSetOfInputs](TimesliceSlot slot, InputRecord& record, bool copy) {
+                        &device = context.deviceContext->device, &currentSetOfInputs](TimesliceSlot slot, InputRecord& record, bool copy, bool consume = true) {
     ZoneScopedN("forward inputs");
     assert(record.size() == currentSetOfInputs.size());
     // we collect all messages per forward in a map and send them together
     std::vector<FairMQParts> forwardedParts;
     forwardedParts.resize(spec->forwards.size());
+
+    std::vector<size_t> forwardMap;
+    forwardMap.resize(spec->forwards.size());
+    std::unordered_map<std::string, size_t> tmpMap;
+    for (size_t fi = 0; fi < spec->forwards.size(); fi++) {
+      forwardMap[fi] = tmpMap.try_emplace(spec->forwards[fi].channel, fi).first->second;
+    }
+
     for (size_t ii = 0, ie = record.size(); ii < ie; ++ii) {
       DataRef input = record.getByPos(ii);
 
@@ -1245,14 +1256,14 @@ bool DataProcessingDevice::tryDispatchComputation(DataProcessorContext& context,
         }
         // We need to find the forward route only for the first
         // part of a split payload. All the others will use the same.
-        if (fdh->splitPayloadIndex == 0) {
+        if (fdh->splitPayloadIndex == 0 || fdh->splitPayloadParts <= 1) {
           cachedForwardingChoice = -1;
           for (size_t fi = 0; fi < spec->forwards.size(); fi++) {
             auto& forward = spec->forwards[fi];
-            if (DataSpecUtils::match(forward.matcher, dh->dataOrigin, dh->dataDescription, dh->subSpecification) == false || (dph->startTime % forward.maxTimeslices) != forward.timeslice) {
+            if (DataSpecUtils::match(forward.matcher, fdh->dataOrigin, fdh->dataDescription, fdh->subSpecification) == false || (fdph->startTime % forward.maxTimeslices) != forward.timeslice) {
               continue;
             }
-            cachedForwardingChoice = fi;
+            cachedForwardingChoice = forwardMap[fi];
             break;
           }
         }
@@ -1359,7 +1370,7 @@ bool DataProcessingDevice::tryDispatchComputation(DataProcessorContext& context,
 
     static bool noCatch = getenv("O2_NO_CATCHALL_EXCEPTIONS") && strcmp(getenv("O2_NO_CATCHALL_EXCEPTIONS"), "0");
 
-    auto runNoCatch = [&context, &processContext]() {
+    auto runNoCatch = [&context, &processContext](DataRelayer::RecordAction& action) {
       if (context.deviceContext->state->quitRequested == false) {
         if (*context.statefulProcess) {
           ZoneScopedN("statefull process");
@@ -1378,10 +1389,10 @@ bool DataProcessingDevice::tryDispatchComputation(DataProcessorContext& context,
     };
 
     if (noCatch) {
-      runNoCatch();
+      runNoCatch(action);
     } else {
       try {
-        runNoCatch();
+        runNoCatch(action);
       } catch (std::exception& ex) {
         ZoneScopedN("error handling");
         /// Convert a standard exception to a RuntimeErrorRef

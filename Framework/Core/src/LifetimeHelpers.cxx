@@ -332,7 +332,7 @@ ExpirationHandler::Handler
     } else {
       url = fmt::format("{}/{}/{}/runNumber={}", serverUrl, path, timestamp, dataTakingContext.runNumber);
     }
-    LOG(INFO) << "fetchFromCCDBCache: Fetching " << url;
+    LOG(debug) << "fetchFromCCDBCache: Fetching " << url;
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &payloadBuffer);
@@ -371,6 +371,24 @@ ExpirationHandler::Handler
     ref.payload = std::move(payload);
 
     return;
+  };
+}
+
+ExpirationHandler::Handler
+  LifetimeHelpers::fetchFromFairMQ(InputSpec const& spec,
+                                   std::string const& channelName)
+{
+  return [spec, channelName](ServiceRegistry& services, PartRef& ref, data_matcher::VariableContext& variables) -> void {
+    auto& rawDeviceService = services.get<RawDeviceService>();
+    auto device = rawDeviceService.device();
+
+    // Receive parts and put them in the PartRef
+    // we know this is not blocking because we were polled
+    // on the channel.
+    FairMQParts parts;
+    device->Receive(parts, channelName, 0);
+    ref.header = std::move(parts.At(0));
+    ref.payload = std::move(parts.At(1));
   };
 }
 
@@ -480,6 +498,27 @@ ExpirationHandler::Handler LifetimeHelpers::dummy(ConcreteDataMatcher const& mat
     ref.payload = std::move(payload);
   };
   return f;
+}
+
+// Life is too short. LISP rules.
+#define STREAM_ENUM(x) \
+  case x:              \
+    oss << #x;         \
+    break;
+std::ostream& operator<<(std::ostream& oss, Lifetime const& val)
+{
+  switch (val) {
+    STREAM_ENUM(Lifetime::Timeframe)
+    STREAM_ENUM(Lifetime::Condition)
+    STREAM_ENUM(Lifetime::QA)
+    STREAM_ENUM(Lifetime::Transient)
+    STREAM_ENUM(Lifetime::Timer)
+    STREAM_ENUM(Lifetime::Enumeration)
+    STREAM_ENUM(Lifetime::Signal)
+    STREAM_ENUM(Lifetime::Optional)
+    STREAM_ENUM(Lifetime::OutOfBand)
+  };
+  return oss;
 }
 
 } // namespace o2::framework
