@@ -115,6 +115,18 @@ o2::framework::ServiceSpec CommonServices::monitoringSpec()
     .kind = ServiceKind::Serial};
 }
 
+// Make it a service so that it can be used easily from the analysis
+// FIXME: Moreover, it makes sense that this will be duplicated on a per thread
+// basis when we get to it.
+o2::framework::ServiceSpec CommonServices::timingInfoSpec()
+{
+  return ServiceSpec{
+    .name = "timing-info",
+    .init = simpleServiceInit<TimingInfo, TimingInfo>(),
+    .configure = noConfiguration(),
+    .kind = ServiceKind::Serial};
+}
+
 o2::framework::ServiceSpec CommonServices::datatakingContextSpec()
 {
   return ServiceSpec{
@@ -518,9 +530,13 @@ auto sendRelayerMetrics(ServiceRegistry& registry, DataProcessingStats& stats) -
   for (auto& channel : device->fChannels) {
     auto newBytesOut = channel.second[0].GetBytesTx();
     auto newBytesIn = channel.second[0].GetBytesRx();
-    monitoring.send(Metric{(float)(newBytesOut - stats.channelBytesOut[ci]) / 1000000.f / (timeSinceLastLongUpdate / 1000.f), fmt::format("channel_{}_rate_in_mb_s", channel.first)}
+    monitoring.send(Metric{(float)(newBytesOut - stats.channelBytesOut[ci]) / 1000000.f / (timeSinceLastLongUpdate / 1000.f),
+                           fmt::format("channel_{}_rate_in_mb_s", channel.first),
+                           o2::monitoring::Verbosity::Debug}
                       .addTag(Key::Subsystem, Value::DPL));
-    monitoring.send(Metric{(float)(newBytesIn - stats.channelBytesIn[ci]) / 1000000.f / (timeSinceLastLongUpdate / 1000.f), fmt::format("channel_{}_rate_out_mb_s", channel.first)}
+    monitoring.send(Metric{(float)(newBytesIn - stats.channelBytesIn[ci]) / 1000000.f / (timeSinceLastLongUpdate / 1000.f),
+                           fmt::format("channel_{}_rate_out_mb_s", channel.first),
+                           o2::monitoring::Verbosity::Debug}
                       .addTag(Key::Subsystem, Value::DPL));
     stats.channelBytesOut[ci] = newBytesOut;
     stats.channelBytesIn[ci] = newBytesIn;
@@ -588,6 +604,7 @@ o2::framework::ServiceSpec CommonServices::dataProcessingStats()
 std::vector<ServiceSpec> CommonServices::defaultServices(int numThreads)
 {
   std::vector<ServiceSpec> specs{
+    timingInfoSpec(),
     timesliceIndex(),
     driverClientSpec(),
     datatakingContextSpec(),
