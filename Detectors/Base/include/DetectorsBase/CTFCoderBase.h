@@ -42,7 +42,7 @@ class CTFCoderBase
                             Decoder };
 
   CTFCoderBase() = delete;
-  CTFCoderBase(int n, DetID det) : mCoders(n), mDet(det) {}
+  CTFCoderBase(int n, DetID det, float memFactor = 1.f) : mCoders(n), mDet(det), mMemMarginFactor(memFactor > 1.f ? memFactor : 1.f) {}
 
   std::unique_ptr<TFile> loadDictionaryTreeFile(const std::string& dictPath, bool mayFail = false);
 
@@ -86,6 +86,12 @@ class CTFCoderBase
     }
   }
 
+  void setMemMarginFactor(float v) { mMemMarginFactor = v > 1.f ? v : 1.f; }
+  float getMemMarginFactor() const { return mMemMarginFactor; }
+
+  void setVerbosity(int v) { mVerbosity = v; }
+  int getVerbosity() const { return mVerbosity; }
+
  protected:
   std::string getPrefix() const { return o2::utils::Str::concat_string(mDet.getName(), "_CTF: "); }
   void assignDictVersion(CTFDictHeader& h) const
@@ -99,6 +105,8 @@ class CTFCoderBase
   std::vector<std::shared_ptr<void>> mCoders; // encoders/decoders
   DetID mDet;
   CTFDictHeader mExtHeader; // external dictionary header
+  float mMemMarginFactor = 1.0f; // factor for memory allocation in EncodedBlocks
+  int mVerbosity = 0;
 
   ClassDefNV(CTFCoderBase, 1);
 };

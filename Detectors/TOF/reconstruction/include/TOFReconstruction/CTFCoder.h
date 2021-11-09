@@ -97,7 +97,7 @@ void CTFCoder::encode(VEC& buff, const gsl::span<const ReadoutWindowData>& rofRe
   ec->getANSHeader().majorVersion = 0;
   ec->getANSHeader().minorVersion = 1;
   // at every encoding the buffer might be autoexpanded, so we don't work with fixed pointer ec
-#define ENCODETOF(part, slot, bits) CTF::get(buff.data())->encode(part, int(slot), bits, optField[int(slot)], &buff, mCoders[int(slot)].get());
+#define ENCODETOF(part, slot, bits) CTF::get(buff.data())->encode(part, int(slot), bits, optField[int(slot)], &buff, mCoders[int(slot)].get(), getMemMarginFactor());
   // clang-format off
   ENCODETOF(cc.bcIncROF,     CTF::BLCbcIncROF,     0);
   ENCODETOF(cc.orbitIncROF,  CTF::BLCorbitIncROF,  0);
@@ -111,7 +111,7 @@ void CTFCoder::encode(VEC& buff, const gsl::span<const ReadoutWindowData>& rofRe
   ENCODETOF(cc.tot,          CTF::BLCtot,          0);
   ENCODETOF(cc.pattMap,      CTF::BLCpattMap,      0);
   // clang-format on
-  CTF::get(buff.data())->print(getPrefix());
+  CTF::get(buff.data())->print(getPrefix(), mVerbosity);
 }
 
 ///___________________________________________________________________________________
@@ -120,7 +120,7 @@ template <typename VROF, typename VDIG, typename VPAT>
 void CTFCoder::decode(const CTF::base& ec, VROF& rofRecVec, VDIG& cdigVec, VPAT& pattVec)
 {
   CompressedInfos cc;
-  ec.print(getPrefix());
+  ec.print(getPrefix(), mVerbosity);
   cc.header = ec.getHeader();
   checkDictVersion(static_cast<const o2::ctf::CTFDictHeader&>(cc.header));
 #define DECODETOF(part, slot) ec.decode(part, int(slot), mCoders[int(slot)].get())

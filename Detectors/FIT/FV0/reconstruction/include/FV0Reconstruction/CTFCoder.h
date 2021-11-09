@@ -95,7 +95,7 @@ void CTFCoder::encode(VEC& buff, const gsl::span<const BCData>& digitVec, const 
   ec->getANSHeader().majorVersion = 0;
   ec->getANSHeader().minorVersion = 1;
   // at every encoding the buffer might be autoexpanded, so we don't work with fixed pointer ec
-#define ENCODEFV0(part, slot, bits) CTF::get(buff.data())->encode(part, int(slot), bits, optField[int(slot)], &buff, mCoders[int(slot)].get());
+#define ENCODEFV0(part, slot, bits) CTF::get(buff.data())->encode(part, int(slot), bits, optField[int(slot)], &buff, mCoders[int(slot)].get(), getMemMarginFactor());
   // clang-format off
   ENCODEFV0(cd.bcInc,     CTF::BLC_bcInc,    0);
   ENCODEFV0(cd.orbitInc,  CTF::BLC_orbitInc, 0);
@@ -105,7 +105,7 @@ void CTFCoder::encode(VEC& buff, const gsl::span<const BCData>& digitVec, const 
   ENCODEFV0(cd.time,      CTF::BLC_time,     0);
   ENCODEFV0(cd.charge,    CTF::BLC_charge,   0);
   // clang-format on
-  CTF::get(buff.data())->print(getPrefix());
+  CTF::get(buff.data())->print(getPrefix(), mVerbosity);
 }
 
 /// decode entropy-encoded clusters to standard compact clusters
@@ -115,7 +115,7 @@ void CTFCoder::decode(const CTF::base& ec, VDIG& digitVec, VCHAN& channelVec)
   CompressedDigits cd;
   cd.header = ec.getHeader();
   checkDictVersion(static_cast<const o2::ctf::CTFDictHeader&>(cd.header));
-  ec.print(getPrefix());
+  ec.print(getPrefix(), mVerbosity);
 #define DECODEFV0(part, slot) ec.decode(part, int(slot), mCoders[int(slot)].get())
   // clang-format off
   DECODEFV0(cd.bcInc,     CTF::BLC_bcInc);
