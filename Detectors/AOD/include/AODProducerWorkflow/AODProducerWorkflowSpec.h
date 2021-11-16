@@ -24,6 +24,7 @@
 #include "DataFormatsMCH/TrackMCH.h"
 #include "DataFormatsTPC/TrackTPC.h"
 #include "DataFormatsTRD/TrackTRD.h"
+#include "DataFormatsEMCAL/EventHandler.h"
 #include "Framework/AnalysisDataModel.h"
 #include "Framework/AnalysisHelpers.h"
 #include "Framework/DataProcessorSpec.h"
@@ -192,15 +193,26 @@ typedef boost::unordered_map<Triplet_t, int, TripletHash, TripletEqualTo> Triple
 class AODProducerWorkflowDPL : public Task
 {
  public:
-  AODProducerWorkflowDPL(GID::mask_t src, std::shared_ptr<DataRequest> dataRequest, std::string resFile, bool useMC = true) : mInputSources(src), mDataRequest(dataRequest), mResFile{resFile}, mUseMC(useMC) {}
+  AODProducerWorkflowDPL(GID::mask_t src, std::shared_ptr<DataRequest> dataRequest, bool enableSV, std::string resFile, bool useMC = true) : mInputSources(src), mDataRequest(dataRequest), mEnableSV(enableSV), mResFile{resFile}, mUseMC(useMC) {}
   ~AODProducerWorkflowDPL() override = default;
   void init(InitContext& ic) final;
   void run(ProcessingContext& pc) final;
   void endOfStream(framework::EndOfStreamContext& ec) final;
 
  private:
-  bool mUseMC = true;
+  // takes a local vertex timing in NS and converts to a global BC information using the orbit offset from the simulation
+  uint64_t relativeTime_to_GlobalBC(double relativeTimeStampInNS)
+  {
+    return std::round((mStartIR.bc2ns() + relativeTimeStampInNS) / o2::constants::lhc::LHCBunchSpacingNS);
+  }
+  // takes a local vertex timing in NS and converts to a lobal BC information relative to start of timeframe
+  uint64_t relativeTime_to_LocalBC(double relativeTimeStampInNS)
+  {
+    return std::round(relativeTimeStampInNS / o2::constants::lhc::LHCBunchSpacingNS);
+  }
 
+  bool mUseMC = true;
+  bool mEnableSV = true;             // enable secondary vertices
   const float cSpeed = 0.029979246f; // speed of light in TOF units
 
   GID::mask_t mInputSources;
@@ -208,6 +220,7 @@ class AODProducerWorkflowDPL : public Task
   int mRunNumber{-1};
   int mTruncate{1};
   int mRecoOnly{0};
+  o2::InteractionRecord mStartIR{}; // TF 1st IR
   TString mResFile{"AO2D"};
   TString mLPMProdTag{""};
   TString mAnchorPass{""};
@@ -300,6 +313,7 @@ class AODProducerWorkflowDPL : public Task
                   gsl::span<const o2::ft0::RecPoints>& ft0RecPoints,
                   gsl::span<const o2::fv0::RecPoints>& fv0RecPoints,
                   gsl::span<const o2::dataformats::PrimaryVertex>& primVertices,
+                  gsl::span<const o2::emcal::TriggerRecord>& caloEMCCellsTRGR,
                   const std::vector<o2::InteractionTimeRecord>& mcRecords,
                   std::map<uint64_t, int>& bcsMap);
 
@@ -337,6 +351,7 @@ class AODProducerWorkflowDPL : public Task
                                    const dataformats::PrimaryVertex& vertex);
 
   template <typename MCParticlesCursorType>
+
   void fillMCParticlesTable(o2::steer::MCKinematicsReader& mcReader,
                             const MCParticlesCursorType& mcParticlesCursor,
                             gsl::span<const o2::dataformats::VtxTrackRef>& primVer2TRefs,
@@ -361,10 +376,16 @@ class AODProducerWorkflowDPL : public Task
 
   // helper for trd pattern
   uint8_t getTRDPattern(const o2::trd::TrackTRD& track);
+
+  o2::emcal::EventHandler<o2::emcal::Cell>* mCaloEventHandler = nullptr; ///< Pointer to the event builder for emcal cells
+
+  template <typename TCaloCells, typename TCaloTriggerRecord, typename TCaloCursor, typename TCaloTRGTableCursor>
+  void fillCaloTable(const TCaloCells& calocells, const TCaloTriggerRecord& caloCellTRGR, const TCaloCursor& caloCellCursor,
+                     const TCaloTRGTableCursor& caloCellTRGTableCursor, std::map<uint64_t, int>& bcsMap);
 };
 
 /// create a processor spec
-framework::DataProcessorSpec getAODProducerWorkflowSpec(GID::mask_t src, bool useMC, std::string resFile);
+framework::DataProcessorSpec getAODProducerWorkflowSpec(GID::mask_t src, bool enableSV, bool useMC, std::string resFile);
 
 } // namespace o2::aodproducer
 

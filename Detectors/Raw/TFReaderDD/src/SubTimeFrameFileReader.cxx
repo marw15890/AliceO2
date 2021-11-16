@@ -319,7 +319,7 @@ std::unique_ptr<MessagesPerRoute> SubTimeFrameFileReader::read(FairMQDevice* dev
       return nullptr;
     }
 
-    o2::header::Stack headerStack{*lDataHeader, o2f::DataProcessingHeader{tfID, 1}};
+    o2::header::Stack headerStack{*lDataHeader, o2f::DataProcessingHeader{tfID, 1, lStfFileMeta.mWriteTimeMs}};
     if (stfHeader.runNumber == -1) {
       stfHeader.id = lDataHeader->tfCounter;
       stfHeader.runNumber = lDataHeader->runNumber;
@@ -402,7 +402,7 @@ std::unique_ptr<MessagesPerRoute> SubTimeFrameFileReader::read(FairMQDevice* dev
   const auto fmqChannel = findOutputChannel(&stfDistDataHeader);
   if (!fmqChannel.empty()) { // no output channel
     auto fmqFactory = device->GetChannel(fmqChannel, 0).Transport();
-    o2::header::Stack headerStackSTF{stfDistDataHeader, o2f::DataProcessingHeader{tfID}};
+    o2::header::Stack headerStackSTF{stfDistDataHeader, o2f::DataProcessingHeader{tfID, 1, lStfFileMeta.mWriteTimeMs}};
     if (verbosity > 0) {
       printStack(headerStackSTF);
     }

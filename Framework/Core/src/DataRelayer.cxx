@@ -77,6 +77,7 @@ DataRelayer::DataRelayer(const CompletionPolicy& policy,
     sQueriesMetricsNames[i] = std::string("data_queries/") + std::to_string(i);
     char buffer[128];
     assert(mDistinctRoutesIndex[i] < routes.size());
+    mInputs.push_back(routes[mDistinctRoutesIndex[i]].matcher);
     auto& matcher = routes[mDistinctRoutesIndex[i]].matcher;
     DataSpecUtils::describe(buffer, 127, matcher);
     mMetrics.send({std::string{buffer}, sQueriesMetricsNames[i], Verbosity::Debug});
@@ -520,7 +521,14 @@ void DataRelayer::getReadyToProcess(std::vector<DataRelayer::RecordAction>& comp
       return partial[idx].size();
     };
     InputSpan span{getter, nPartsGetter, static_cast<size_t>(partial.size())};
-    auto action = mCompletionPolicy.callback(span);
+    CompletionPolicy::CompletionOp action;
+    if (mCompletionPolicy.callback) {
+      action = mCompletionPolicy.callback(span);
+    } else if (mCompletionPolicy.callbackFull) {
+      action = mCompletionPolicy.callbackFull(span, mInputs);
+    } else {
+      throw std::runtime_error("No completion policy found");
+    }
     switch (action) {
       case CompletionPolicy::CompletionOp::Consume:
       case CompletionPolicy::CompletionOp::ConsumeExisting:
@@ -744,6 +752,12 @@ uint32_t DataRelayer::getRunNumberForSlot(TimesliceSlot slot)
 {
   std::scoped_lock<LockableBase(std::recursive_mutex)> lock(mMutex);
   return VariableContextHelpers::getRunNumber(mTimesliceIndex.getVariablesForSlot(slot));
+}
+
+uint64_t DataRelayer::getCreationTimeForSlot(TimesliceSlot slot)
+{
+  std::scoped_lock<LockableBase(std::recursive_mutex)> lock(mMutex);
+  return VariableContextHelpers::getCreationTime(mTimesliceIndex.getVariablesForSlot(slot));
 }
 
 void DataRelayer::sendContextState()
