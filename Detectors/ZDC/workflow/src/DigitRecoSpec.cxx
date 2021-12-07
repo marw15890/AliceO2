@@ -28,7 +28,7 @@
 #include "DataFormatsZDC/OrbitData.h"
 #include "DataFormatsZDC/RecEvent.h"
 #include "ZDCBase/ModuleConfig.h"
-
+#include "CommonUtils/NameConf.h"
 #include "CCDB/BasicCCDBManager.h"
 #include "CCDB/CCDBTimeStampUtils.h"
 #include "ZDCReconstruction/RecoConfigZDC.h"
@@ -66,61 +66,61 @@ void DigitRecoSpec::run(ProcessingContext& pc)
     // Initialization from CCDB
     auto& mgr = o2::ccdb::BasicCCDBManager::instance();
     mgr.setURL(mccdbHost);
-    long timeStamp = 0;
+    /*long timeStamp = 0; // TIMESTAMP SHOULD NOT BE 0
     if (timeStamp == mgr.getTimestamp()) {
       return;
     }
-    mgr.setTimestamp(timeStamp);
+    mgr.setTimestamp(timeStamp);*/
 
-    std::string loadedConfFiles = "Loaded ZDC configuration files for timestamp " + std::to_string(timeStamp) + ":";
+    std::string loadedConfFiles = "Loaded ZDC configuration files for timestamp " + std::to_string(mgr.getTimestamp()) + ":";
     auto* moduleConfig = mgr.get<o2::zdc::ModuleConfig>(o2::zdc::CCDBPathConfigModule);
     if (!moduleConfig) {
-      LOG(FATAL) << "Missing ModuleConfig ZDC configuration object";
+      LOG(fatal) << "Missing ModuleConfig ZDC configuration object";
       return;
     } else {
       loadedConfFiles += " ModuleConfig";
     }
     if (mVerbosity > DbgZero) {
-      LOG(INFO) << "Loaded ZDC module configuration for timestamp " << timeStamp;
+      LOG(info) << "Loaded ZDC module configuration for timestamp " << mgr.getTimestamp();
       moduleConfig->print();
     }
 
     // Configuration parameters for ZDC reconstruction
     auto* recoConfigZDC = mgr.get<o2::zdc::RecoConfigZDC>(o2::zdc::CCDBPathRecoConfigZDC);
     if (!recoConfigZDC) {
-      LOG(INFO) << loadedConfFiles;
-      LOG(FATAL) << "Missing RecoConfigZDC object";
+      LOG(info) << loadedConfFiles;
+      LOG(fatal) << "Missing RecoConfigZDC object";
       return;
     } else {
       loadedConfFiles += " RecoConfigZDC";
     }
     if (mVerbosity > DbgZero) {
-      LOG(INFO) << "Loaded RecoConfigZDC for timestamp " << timeStamp;
+      LOG(info) << "Loaded RecoConfigZDC for timestamp " << mgr.getTimestamp();
       recoConfigZDC->print();
     }
 
     // TDC centering
     auto* tdcParam = mgr.get<o2::zdc::ZDCTDCParam>(o2::zdc::CCDBPathTDCCalib);
     if (!tdcParam) {
-      LOG(INFO) << loadedConfFiles;
-      LOG(FATAL) << "Missing ZDCTDCParam calibration object";
+      LOG(info) << loadedConfFiles;
+      LOG(fatal) << "Missing ZDCTDCParam calibration object";
       return;
     } else {
       loadedConfFiles += " ZDCTDCParam";
     }
     if (mVerbosity > DbgZero) {
-      LOG(INFO) << "Loaded TDC centering ZDCTDCParam for timestamp " << timeStamp;
+      LOG(info) << "Loaded TDC centering ZDCTDCParam for timestamp " << mgr.getTimestamp();
       tdcParam->print();
     }
 
     // Energy calibration
     auto* energyParam = mgr.get<o2::zdc::ZDCEnergyParam>(o2::zdc::CCDBPathEnergyCalib);
     if (!energyParam) {
-      LOG(WARNING) << "Missing ZDCEnergyParam calibration object - using default";
+      LOG(warning) << "Missing ZDCEnergyParam calibration object - using default";
     } else {
       loadedConfFiles += " ZDCEnergyParam";
       if (mVerbosity > DbgZero) {
-        LOG(INFO) << "Loaded Energy calibration ZDCEnergyParam for timestamp " << timeStamp;
+        LOG(info) << "Loaded Energy calibration ZDCEnergyParam for timestamp " << mgr.getTimestamp();
         energyParam->print();
       }
     }
@@ -128,16 +128,16 @@ void DigitRecoSpec::run(ProcessingContext& pc)
     // Tower calibration
     auto* towerParam = mgr.get<o2::zdc::ZDCTowerParam>(o2::zdc::CCDBPathTowerCalib);
     if (!towerParam) {
-      LOG(WARNING) << "Missing ZDCTowerParam calibration object - using default";
+      LOG(warning) << "Missing ZDCTowerParam calibration object - using default";
     } else {
       loadedConfFiles += " ZDCTowerParam";
       if (mVerbosity > DbgZero) {
-        LOG(INFO) << "Loaded Tower calibration ZDCTowerParam for timestamp " << timeStamp;
+        LOG(info) << "Loaded Tower calibration ZDCTowerParam for timestamp " << mgr.getTimestamp();
         towerParam->print();
       }
     }
 
-    LOG(INFO) << loadedConfFiles;
+    LOG(info) << loadedConfFiles;
 
     mDR.setModuleConfig(moduleConfig);
     mDR.setRecoConfigZDC(recoConfigZDC);
@@ -197,7 +197,7 @@ void DigitRecoSpec::run(ProcessingContext& pc)
     recEvent.addInfo(reca.adcPedQC, MsgADCPedQC);
     recEvent.addInfo(reca.adcPedMissing, MsgADCPedMissing);
   }
-  LOG(INFO) << "Reconstructed " << ntt << " signal TDCs and " << nte << " ZDC energies in " << recEvent.mRecBC.size() << "/" << recAux.size() << " b.c.";
+  LOG(info) << "Reconstructed " << ntt << " signal TDCs and " << nte << " ZDC energies in " << recEvent.mRecBC.size() << "/" << recAux.size() << " b.c.";
   // TODO: rate information for all channels
   // TODO: summary of reconstruction to be collected by DQM?
   pc.outputs().snapshot(Output{"ZDC", "BCREC", 0, Lifetime::Timeframe}, recEvent.mRecBC);
@@ -210,7 +210,7 @@ void DigitRecoSpec::run(ProcessingContext& pc)
 void DigitRecoSpec::endOfStream(EndOfStreamContext& ec)
 {
   mDR.eor();
-  LOGF(INFO, "ZDC Reconstruction total timing: Cpu: %.3e Real: %.3e s in %d slots",
+  LOGF(info, "ZDC Reconstruction total timing: Cpu: %.3e Real: %.3e s in %d slots",
        mTimer.CpuTime(), mTimer.RealTime(), mTimer.Counter() - 1);
 }
 
@@ -232,7 +232,7 @@ framework::DataProcessorSpec getDigitRecoSpec(const int verbosity = 0, const boo
     inputs,
     outputs,
     AlgorithmSpec{adaptFromTask<DigitRecoSpec>(verbosity, enableDebugOut)},
-    o2::framework::Options{{"ccdb-url", o2::framework::VariantType::String, "http://ccdb-test.cern.ch:8080", {"CCDB Url"}}}};
+    o2::framework::Options{{"ccdb-url", o2::framework::VariantType::String, o2::base::NameConf::getCCDBServer(), {"CCDB Url"}}}};
 }
 
 } // namespace zdc

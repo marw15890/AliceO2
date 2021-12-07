@@ -47,7 +47,7 @@ class CTFCoder : public o2::ctf::CTFCoderBase
   using RowColBuff = std::vector<PixelData>;
 
   CTFCoder(o2::detectors::DetID det) : o2::ctf::CTFCoderBase(CTF::getNBlocks(), det) {}
-  ~CTFCoder() = default;
+  ~CTFCoder() final = default;
 
   /// entropy-encode clusters to buffer with CTF
   template <typename VEC>
@@ -61,7 +61,7 @@ class CTFCoder : public o2::ctf::CTFCoderBase
   template <typename VROF, typename VDIG>
   void decode(const CTF::base& ec, VROF& rofRecVec, VDIG& digVec, const NoiseMap* noiseMap, const LookUp& clPattLookup);
 
-  void createCoders(const std::string& dictPath, o2::ctf::CTFCoderBase::OpType op);
+  void createCoders(const std::vector<char>& bufVec, o2::ctf::CTFCoderBase::OpType op) final;
 
  private:
   CompressedClusters decodeCompressedClusters(const CTF::base& ec);
@@ -80,8 +80,6 @@ class CTFCoder : public o2::ctf::CTFCoderBase
 
   void appendToTree(TTree& tree, CTF& ec);
   void readFromTree(TTree& tree, int entry, std::vector<ROFRecord>& rofRecVec, std::vector<CompClusterExt>& cclusVec, std::vector<unsigned char>& pattVec, const NoiseMap* noiseMap, const LookUp& clPattLookup);
-
-  ClassDefNV(CTFCoder, 1);
 };
 
 /// entropy-encode clusters to buffer with CTF
@@ -322,7 +320,7 @@ void CTFCoder::decompress(const CompressedClusters& compCl, VROF& rofRecVec, VCL
   assert(chipCount == compCl.header.nChips);
 
   if (clCount != compCl.header.nClusters) {
-    LOG(ERROR) << "expected " << compCl.header.nClusters << " but counted " << clCount << " in ROFRecords";
+    LOG(error) << "expected " << compCl.header.nClusters << " but counted " << clCount << " in ROFRecords";
     throw std::runtime_error("mismatch between expected and counter number of clusters");
   }
 }
@@ -358,7 +356,7 @@ void CTFCoder::decompress(const CompressedClusters& compCl, VROF& rofRecVec, VDI
         col += compCl.colInc[clCount];
 #ifdef _CHECK_INCREMENTES_ // RS FIXME with current clusterization column increment can be slightly negative
 //        if (int16_t(compCl.colInc[clCount])<0) {
-//          LOG(WARNING) << "Negative column increment " << int16_t(compCl.colInc[clCount]) << " -> " << col << " in chip " << chipID;
+//          LOG(warning) << "Negative column increment " << int16_t(compCl.colInc[clCount]) << " -> " << col << " in chip " << chipID;
 //        }
 #endif
       } else { // new chip starts
@@ -372,7 +370,7 @@ void CTFCoder::decompress(const CompressedClusters& compCl, VROF& rofRecVec, VDI
         chipID += compCl.chipInc[++chipCount];
 #ifdef _CHECK_INCREMENTES_
         if (int16_t(compCl.chipInc[chipCount]) < 0) {
-          LOG(WARNING) << "Negative chip increment " << int16_t(compCl.chipInc[chipCount]) << " -> " << chipID;
+          LOG(warning) << "Negative chip increment " << int16_t(compCl.chipInc[chipCount]) << " -> " << chipID;
         }
 #endif
         inChip = 1;
@@ -420,7 +418,7 @@ void CTFCoder::decompress(const CompressedClusters& compCl, VROF& rofRecVec, VDI
   assert(chipCount == compCl.header.nChips);
 
   if (clCount != compCl.header.nClusters) {
-    LOG(ERROR) << "expected " << compCl.header.nClusters << " but counted " << clCount << " in ROFRecords";
+    LOG(error) << "expected " << compCl.header.nClusters << " but counted " << clCount << " in ROFRecords";
     throw std::runtime_error("mismatch between expected and counter number of clusters");
   }
 }

@@ -15,8 +15,9 @@
 #include "DetectorsCalibration/TimeSlotCalibration.h"
 #include "DetectorsCalibration/TimeSlot.h"
 #include "DataFormatsTOF/CalibInfoTOF.h"
-#include "TOFCalibration/CalibTOFapi.h"
+#include "TOFBase/CalibTOFapi.h"
 #include "DataFormatsTOF/CalibLHCphaseTOF.h"
+#include "CommonUtils/NameConf.h"
 #include "TOFBase/Geo.h"
 #include "CCDB/CcdbObjectInfo.h"
 #include <array>
@@ -63,7 +64,7 @@ class LHCClockCalibrator final : public o2::calibration::TimeSlotCalibration<o2:
   using LHCphaseVector = std::vector<LHCphase>;
 
  public:
-  LHCClockCalibrator(int minEnt = 500, int nb = 1000, float r = 24400, const std::string path = "http://ccdb-test.cern.ch:8080") : mMinEntries(minEnt), mNBins(nb), mRange(r) { mCalibTOFapi.setURL(path); }
+  LHCClockCalibrator(int minEnt = 500, int nb = 1000, float r = 24400, const std::string path = o2::base::NameConf::getCCDBServer()) : mMinEntries(minEnt), mNBins(nb), mRange(r) { mCalibTOFapi.setURL(path); }
   ~LHCClockCalibrator() final = default;
   bool hasEnoughData(const Slot& slot) const final { return slot.getContainer()->entries >= mMinEntries; }
   void initOutput() final;

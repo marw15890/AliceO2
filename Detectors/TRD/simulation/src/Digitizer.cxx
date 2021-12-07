@@ -53,7 +53,7 @@ void Digitizer::init()
   } else {
     mNumThreads = std::min(maxthreads, askedthreads);
   }
-  LOG(INFO) << "TRD: Digitizing with " << mNumThreads << " threads ";
+  LOG(info) << "TRD: Digitizing with " << mNumThreads << " threads ";
 #endif
 
   // initialize structures that we need per thread
@@ -91,7 +91,7 @@ void Digitizer::flush(DigitContainer& digits, o2::dataformats::MCTruthContainer<
     if (smc.size() > 0) {
       bool status = convertSignalsToADC(smc, digits);
       if (!status) {
-        LOG(WARN) << "TRD conversion of signals to digits failed";
+        LOG(warn) << "TRD conversion of signals to digits failed";
       }
       dumpLabels(smc, labels);
     }
@@ -101,7 +101,7 @@ void Digitizer::flush(DigitContainer& digits, o2::dataformats::MCTruthContainer<
     for (auto& smc : mSignalsMapCollection) {
       bool status = convertSignalsToADC(smc, digits);
       if (!status) {
-        LOG(WARN) << "TRD conversion of signals to digits failed";
+        LOG(warn) << "TRD conversion of signals to digits failed";
       }
       dumpLabels(smc, labels);
     }
@@ -142,7 +142,7 @@ void Digitizer::clearContainers()
 void Digitizer::process(std::vector<Hit> const& hits)
 {
   if (!mCalib) {
-    LOG(FATAL) << "TRD Calibration database not available";
+    LOG(fatal) << "TRD Calibration database not available";
   }
 
   // Get the a hit container for all the hits in a given detector then call convertHits for a given detector (0 - 539)
@@ -162,7 +162,7 @@ void Digitizer::process(std::vector<Hit> const& hits)
     auto& signalsMap = mSignalsMapCollection[det];
     // Jump to the next detector if the detector is
     // switched off, not installed, etc
-    if (mCalib->isChamberNoData(det)) {
+    if (mCalib->getChamberStatus()->isNoData(det)) {
       continue;
     }
     if (!mGeo->chamberInGeometry(det)) {
@@ -175,7 +175,7 @@ void Digitizer::process(std::vector<Hit> const& hits)
     }
 
     if (!convertHits(det, hitsPerDetector[det], signalsMap, threadid)) {
-      LOG(WARN) << "TRD conversion of hits failed for detector " << det;
+      LOG(warn) << "TRD conversion of hits failed for detector " << det;
       continue; // go to the next chamber
     }
   }
@@ -424,24 +424,23 @@ bool Digitizer::convertSignalsToADC(SignalContainer& signalMapCont, DigitContain
     const int col = getColFromKey(key);
     // halfchamber masking
     int mcm = (int)(col / 18);               // current group of 18 col pads
-    int halfchamberside = (mcm > 3 ? 1 : 0); // 0=Aside, 1=Bside
+    int halfchamberside = (mcm > 3) ? 1 : 0; // 0=Aside, 1=Bside
 
     // Halfchambers that are switched off, masked by mCalib
-    /* Something is wrong with isHalfChamberNoData - deactivated for now
-    if (mCalib->isHalfChamberNoData(det, halfchamberside)) {
+    if ((halfchamberside == 0 && mCalib->getChamberStatus()->isNoDataSideA(det)) ||
+        (halfchamberside == 1 && mCalib->getChamberStatus()->isNoDataSideB(det))) {
       continue;
     }
-    */
 
     // Check whether pad is masked
     // Bridged pads are not considered yet!!!
-    if (mCalib->isPadMasked(det, col, row) || mCalib->isPadNotConnected(det, col, row)) {
+    if (mCalib->getPadStatus()->isMasked(det, col, row) || mCalib->getPadStatus()->isNotConnected(det, col, row)) {
       continue;
     }
 
     float padgain = mCalib->getPadGainFactor(det, row, col); // The gain factor
     if (padgain <= 0) {
-      LOG(FATAL) << "Not a valid gain " << padgain << ", " << det << ", " << col << ", " << row;
+      LOG(fatal) << "Not a valid gain " << padgain << ", " << det << ", " << col << ", " << row;
     }
 
     signalMapIter.second.isDigit = true; // flag the signal as digit

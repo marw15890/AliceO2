@@ -34,7 +34,7 @@ void EntropyDecoderSpec::init(o2::framework::InitContext& ic)
 {
   std::string dictPath = ic.options().get<std::string>("ctf-dict");
   if (!dictPath.empty() && dictPath != "none") {
-    mCTFCoder.createCoders(dictPath, o2::ctf::CTFCoderBase::OpType::Decoder);
+    mCTFCoder.createCodersFromFile<CTF>(dictPath, o2::ctf::CTFCoderBase::OpType::Decoder);
   }
 }
 
@@ -54,12 +54,12 @@ void EntropyDecoderSpec::run(ProcessingContext& pc)
   }
 
   mTimer.Stop();
-  LOG(INFO) << "Decoded " << digits.size() << " CTP digits in " << mTimer.CpuTime() - cput << " s";
+  LOG(info) << "Decoded " << digits.size() << " CTP digits in " << mTimer.CpuTime() - cput << " s";
 }
 
 void EntropyDecoderSpec::endOfStream(EndOfStreamContext& ec)
 {
-  LOGF(INFO, "CTP Entropy Decoding total timing: Cpu: %.3e Real: %.3e s in %d slots",
+  LOGF(info, "CTP Entropy Decoding total timing: Cpu: %.3e Real: %.3e s in %d slots",
        mTimer.CpuTime(), mTimer.RealTime(), mTimer.Counter() - 1);
 }
 

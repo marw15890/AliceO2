@@ -28,7 +28,7 @@ void customize(std::vector<o2::framework::ConfigParamSpec>& workflowOptions)
 #include "Framework/runDataProcessing.h"
 #include "Framework/Task.h"
 #include "CommonDataFormat/TFIDInfo.h"
-#include "DetectorsCommonDataFormats/NameConf.h"
+#include "CommonUtils/NameConf.h"
 #include <vector>
 #include <TFile.h>
 
@@ -52,7 +52,7 @@ class TFIDInfoWriter : public o2::framework::Task
   {
     TFile fl(mOutFileName.c_str(), "recreate");
     fl.WriteObjectAny(&mData, "std::vector<o2::dataformats::TFIDInfo>", "tfidinfo");
-    LOGP(INFO, "Wrote TFIDInfo vector with {} entries to {}", mData.size(), fl.GetName());
+    LOGP(info, "Wrote TFIDInfo vector with {} entries to {}", mData.size(), fl.GetName());
   }
 
  private:

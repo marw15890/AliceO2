@@ -35,7 +35,7 @@ void EntropyDecoderSpec::init(o2::framework::InitContext& ic)
 {
   std::string dictPath = ic.options().get<std::string>("ctf-dict");
   if (!dictPath.empty() && dictPath != "none") {
-    mCTFCoder.createCoders(dictPath, o2::ctf::CTFCoderBase::OpType::Decoder);
+    mCTFCoder.createCodersFromFile<CTF>(dictPath, o2::ctf::CTFCoderBase::OpType::Decoder);
   }
 }
 
@@ -56,12 +56,12 @@ void EntropyDecoderSpec::run(ProcessingContext& pc)
     mCTFCoder.decode(ctfImage, bcdata, chans, peds);
   }
   mTimer.Stop();
-  LOG(INFO) << "Decoded " << chans.size() << " ZDC channels in " << bcdata.size() << " triggers and " << peds.size() << " pedestals in " << mTimer.CpuTime() - cput << " s";
+  LOG(info) << "Decoded " << chans.size() << " ZDC channels in " << bcdata.size() << " triggers and " << peds.size() << " pedestals in " << mTimer.CpuTime() - cput << " s";
 }
 
 void EntropyDecoderSpec::endOfStream(EndOfStreamContext& ec)
 {
-  LOGF(INFO, "ZDC Entropy Decoding total timing: Cpu: %.3e Real: %.3e s in %d slots",
+  LOGF(info, "ZDC Entropy Decoding total timing: Cpu: %.3e Real: %.3e s in %d slots",
        mTimer.CpuTime(), mTimer.RealTime(), mTimer.Counter() - 1);
 }
 

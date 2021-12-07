@@ -24,6 +24,7 @@
 #include "DataFormatsMCH/TrackMCH.h"
 #include "DataFormatsTPC/TrackTPC.h"
 #include "DataFormatsTRD/TrackTRD.h"
+#include "DataFormatsZDC/BCRecData.h"
 #include "DataFormatsEMCAL/EventHandler.h"
 #include "Framework/AnalysisDataModel.h"
 #include "Framework/AnalysisHelpers.h"
@@ -233,6 +234,11 @@ class AODProducerWorkflowDPL : public Task
   std::unordered_map<GIndex, int> mGIDToTableID;
   int mTableTrID{0};
 
+  // zdc helper maps to avoid a number of "if" statements
+  // when filling ZDC table
+  map<string, float> mZDCEnergyMap; // mapping detector name to a corresponding energy
+  map<string, float> mZDCTDCMap;    // mapping TDC channel to a corresponding TDC value
+
   TripletsMap_t mToStore;
 
   // MC production metadata holder
@@ -290,7 +296,6 @@ class AODProducerWorkflowDPL : public Task
     float tofChi2 = -999.f;
     float tpcSignal = -999.f;
     float trdSignal = -999.f;
-    float tofSignal = -999.f;
     float length = -999.f;
     float tofExpMom = -999.f;
     float trackEtaEMCAL = -999.f;
@@ -309,11 +314,7 @@ class AODProducerWorkflowDPL : public Task
     uint8_t fwdLabelMask = 0;
   };
 
-  void collectBCs(gsl::span<const o2::fdd::RecPoint>& fddRecPoints,
-                  gsl::span<const o2::ft0::RecPoints>& ft0RecPoints,
-                  gsl::span<const o2::fv0::RecPoints>& fv0RecPoints,
-                  gsl::span<const o2::dataformats::PrimaryVertex>& primVertices,
-                  gsl::span<const o2::emcal::TriggerRecord>& caloEMCCellsTRGR,
+  void collectBCs(o2::globaltracking::RecoContainer& data,
                   const std::vector<o2::InteractionTimeRecord>& mcRecords,
                   std::map<uint64_t, int>& bcsMap);
 

@@ -49,7 +49,7 @@ void customize(std::vector<ConfigParamSpec>& workflowOptions)
     {"validate-with-ft0", o2::framework::VariantType::Bool, false, {"use FT0 time for vertex validation"}},
     {"vertex-track-matching-sources", VariantType::String, std::string{GID::ALL}, {"comma-separated list of sources to use in vertex-track associations or \"none\" to disable matching"}},
     {"configKeyValues", VariantType::String, "", {"Semicolon separated key=value strings ..."}}};
-
+  o2::raw::HBFUtilsInitializer::addConfigOption(options);
   std::swap(workflowOptions, options);
 }
 
@@ -86,8 +86,10 @@ WorkflowSpec defineDataProcessing(ConfigContext const& configcontext)
     specs.emplace_back(o2::vertexing::getVertexTrackMatcherSpec(srcVT));
   }
 
+  auto srcMtc = srcComb & ~GID::getSourceMask(GID::MFTMCH); // Do not request MFTMCH matches
+
   // only TOF clusters are needed if TOF is involved, no clusters MC needed
-  o2::globaltracking::InputHelper::addInputSpecs(configcontext, specs, srcClus, srcComb, srcComb, useMC, dummy);
+  o2::globaltracking::InputHelper::addInputSpecs(configcontext, specs, srcClus, srcMtc, srcComb, useMC, dummy);
 
   if (!disableRootOut) {
     specs.emplace_back(o2::vertexing::getPrimaryVertexWriterSpec(srcVT.none(), useMC));

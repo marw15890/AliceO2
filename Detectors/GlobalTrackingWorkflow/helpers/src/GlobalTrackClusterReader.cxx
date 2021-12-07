@@ -33,7 +33,7 @@ void customize(std::vector<ConfigParamSpec>& workflowOptions)
     {"cluster-types", VariantType::String, std::string{GlobalTrackID::NONE}, {"comma-separated list of cluster sources to read"}},
     {"disable-root-input", o2::framework::VariantType::Bool, false, {"disable reading root files, essentially making this workflow void, but needed for compatibility"}},
     {"configKeyValues", VariantType::String, "", {"Semicolon separated key=value strings ..."}}};
-
+  o2::raw::HBFUtilsInitializer::addConfigOption(options);
   std::swap(workflowOptions, options);
 }
 
@@ -50,7 +50,10 @@ WorkflowSpec defineDataProcessing(ConfigContext const& cfgc)
   if (!cfgc.helpOnCommandLine() && srcTrk.none() && srcCl.none()) {
     throw std::runtime_error("no tracks or clusters requested");
   }
-  InputHelper::addInputSpecs(cfgc, specs, srcCl, srcTrk, srcTrk, useMC);
+
+  auto srcMtc = srcTrk & ~GlobalTrackID::getSourceMask(GlobalTrackID::MFTMCH); // Do not request MFTMCH matches
+
+  InputHelper::addInputSpecs(cfgc, specs, srcCl, srcMtc, srcTrk, useMC);
 
   // configure dpl timer to inject correct firstTFOrbit: start from the 1st orbit of TF containing 1st sampled orbit
   o2::raw::HBFUtilsInitializer hbfIni(cfgc, specs);
