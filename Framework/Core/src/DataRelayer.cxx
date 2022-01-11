@@ -28,6 +28,7 @@
 #include "DataProcessingStatus.h"
 #include "DataRelayerHelpers.h"
 #include "InputRouteHelpers.h"
+#include "Framework/LifetimeHelpers.h"
 
 #include "Headers/DataHeaderHelpers.h"
 
@@ -35,6 +36,7 @@
 #include <Monitoring/Monitoring.h>
 
 #include <fmt/format.h>
+#include <fmt/ostream.h>
 #include <gsl/span>
 #include <numeric>
 #include <string>
@@ -66,7 +68,11 @@ DataRelayer::DataRelayer(const CompletionPolicy& policy,
 {
   std::scoped_lock<LockableBase(std::recursive_mutex)> lock(mMutex);
 
-  setPipelineLength(DEFAULT_PIPELINE_LENGTH);
+  if (policy.configureRelayer == nullptr) {
+    setPipelineLength(DEFAULT_PIPELINE_LENGTH);
+  } else {
+    policy.configureRelayer(*this);
+  }
 
   // The queries are all the same, so we only have width 1
   auto numInputTypes = mDistinctRoutesIndex.size();
@@ -80,7 +86,7 @@ DataRelayer::DataRelayer(const CompletionPolicy& policy,
     mInputs.push_back(routes[mDistinctRoutesIndex[i]].matcher);
     auto& matcher = routes[mDistinctRoutesIndex[i]].matcher;
     DataSpecUtils::describe(buffer, 127, matcher);
-    mMetrics.send({std::string{buffer}, sQueriesMetricsNames[i], Verbosity::Debug});
+    mMetrics.send({fmt::format("{} ({})", buffer, mInputs.back().lifetime), sQueriesMetricsNames[i], Verbosity::Debug});
   }
 }
 
@@ -290,8 +296,7 @@ DataRelayer::RelayChoice
     cachedStateMetrics[cacheIdx] = CacheEntryStatus::PENDING;
     // TODO: make sure that multiple parts can only be added within the same call of
     // DataRelayer::relay
-    assert(nPayloads == 1);
-    assert(nMessages % 2 == 0);
+    assert(nPayloads > 0);
     for (size_t mi = 0; mi < nMessages; ++mi) {
       assert(mi + nPayloads < nMessages);
       target.add([&messages, &mi](size_t i) -> FairMQMessagePtr& { return messages[mi + i]; }, nPayloads + 1);
@@ -396,7 +401,7 @@ DataRelayer::RelayChoice
   };
 
   if (input == INVALID_INPUT) {
-    LOG(ERROR) << "Could not match incoming data to any input route: " << DataHeaderInfo();
+    LOG(error) << "Could not match incoming data to any input route: " << DataHeaderInfo();
     mStats.malformedInputs++;
     mStats.droppedIncomingMessages++;
     for (size_t pi = 0; pi < nMessages; ++pi) {
@@ -406,7 +411,7 @@ DataRelayer::RelayChoice
   }
 
   if (TimesliceId::isValid(timeslice) == false) {
-    LOG(ERROR) << "Could not determine the timeslice for input: " << DataHeaderInfo();
+    LOG(error) << "Could not determine the timeslice for input: " << DataHeaderInfo();
     mStats.malformedInputs++;
     mStats.droppedIncomingMessages++;
     for (size_t pi = 0; pi < nMessages; ++pi) {
@@ -427,14 +432,14 @@ DataRelayer::RelayChoice
       static std::atomic<size_t> obsoleteCount = 0;
       static std::atomic<size_t> mult = 1;
       if ((obsoleteCount++ % (1 * mult)) == 0) {
-        LOGP(WARNING, "Over {} incoming messages are already obsolete, not relaying.", obsoleteCount);
+        LOGP(warning, "Over {} incoming messages are already obsolete, not relaying.", obsoleteCount);
         if (obsoleteCount > mult * 10) {
           mult = mult * 10;
         }
       }
       return Dropped;
     case TimesliceIndex::ActionTaken::DropInvalid:
-      LOG(WARNING) << "Incoming data is invalid, not relaying.";
+      LOG(warning) << "Incoming data is invalid, not relaying.";
       mStats.malformedInputs++;
       mStats.droppedIncomingMessages++;
       for (size_t pi = 0; pi < nMessages; ++pi) {
@@ -513,9 +518,10 @@ void DataRelayer::getReadyToProcess(std::vector<DataRelayer::RecordAction>& comp
         auto payload = partial[idx].payload(part).get();
         return DataRef{nullptr,
                        reinterpret_cast<const char*>(header->GetData()),
-                       reinterpret_cast<const char*>(payload ? payload->GetData() : nullptr)};
+                       reinterpret_cast<char const*>(payload ? payload->GetData() : nullptr),
+                       payload ? payload->GetSize() : 0};
       }
-      return DataRef{nullptr, nullptr, nullptr};
+      return DataRef{};
     };
     auto nPartsGetter = [&partial](size_t idx) {
       return partial[idx].size();

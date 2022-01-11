@@ -62,12 +62,13 @@ set(SRCS
     TRDTracking/GPUTRDTrackerKernels.cxx
     Base/GPUParam.cxx)
 
+set(SRCS_DATATYPES DataTypes/GPUDataTypes.cxx)
 set(SRCS_O2_DATATYPE_HEADERS
     DataTypes/GPUTRDTrackO2.cxx)
 set(SRCS_O2_DATATYPES
-    DataTypes/GPUDataTypes.cxx
+    ${SRCS_DATATYPES}
     Interface/GPUO2InterfaceConfigurableParam.cxx)
-set(HDRS_CINT_O2 DataTypes/TPCdEdxCalibrationSplines.h Merger/GPUTPCGMMergedTrack.h)
+set(HDRS_CINT_O2 Merger/GPUTPCGMMergedTrack.h)
 set(HDRS_CINT_O2_DATATYPES DataTypes/GPUDataTypes.h Interface/GPUO2InterfaceConfigurableParam.h)
 set(HDRS_CINT_O2_ADDITIONAL DataTypes/GPUSettings.h Definitions/GPUSettingsList.h DataTypes/GPUDataTypes.h DataTypes/GPUTRDTrack.h) # Manual dependencies for ROOT dictionary generation
 
@@ -113,7 +114,7 @@ set(HDRS_INSTALL
     Merger/GPUTPCGMBorderTrack.h
     Merger/GPUTPCGMOfflineStatisticalErrors.h
     Merger/GPUTPCGMMergedTrack.h
-    Merger/GPUTPCGMMergedTrackHit.h
+    DataTypes/GPUTPCGMMergedTrackHit.h
     DataTypes/GPUTRDDef.h
     DataTypes/GPUSettings.h
     TRDTracking/GPUTRDTrackPoint.h
@@ -169,7 +170,6 @@ if(ALIGPU_BUILD_TYPE STREQUAL "O2" OR CONFIG_O2_EXTENSIONS)
         ITS/GPUITSFitter.cxx
         ITS/GPUITSFitterKernels.cxx
         dEdx/GPUdEdx.cxx
-        DataTypes/TPCdEdxCalibrationSplines.cxx
         TPCConvert/GPUTPCConvert.cxx
         TPCConvert/GPUTPCConvertKernel.cxx
         DataCompression/GPUTPCCompression.cxx
@@ -430,6 +430,7 @@ if(ALIGPU_BUILD_TYPE STREQUAL "ALIROOT")
                      ${SRCS}
                      ${SRCS_NO_CINT}
                      ${SRCS_NO_H}
+                     ${SRCS_DATATYPES}
                      G__Ali${MODULE}.cxx)
   target_link_libraries(Ali${MODULE} ${LIBDEPS})
 
@@ -456,7 +457,7 @@ endif()
 
 # Main CMake part for Standalone
 if(ALIGPU_BUILD_TYPE STREQUAL "Standalone")
-  add_library(${MODULE} SHARED ${SRCS} ${SRCS_NO_CINT} ${SRCS_NO_H})
+  add_library(${MODULE} SHARED ${SRCS} ${SRCS_NO_CINT} ${SRCS_NO_H} ${SRCS_DATATYPES})
   set(targetName ${MODULE})
   add_library(O2::${MODULE} ALIAS ${MODULE})
 endif()

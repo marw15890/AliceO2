@@ -57,22 +57,26 @@ class MFTDCSDataProcessor : public o2::framework::Task
   //________________________________________________________________
   void init(o2::framework::InitContext& ic) final
   {
+
+    // o2::conf::ConfigurableParam::updateFromString(ic.options().get<std::string>("configKeyValues"));
+
     std::vector<DPID> vect;
     mDPsUpdateInterval = ic.options().get<int64_t>("DPs-update-interval");
     if (mDPsUpdateInterval == 0) {
-      LOG(ERROR) << "MFT DPs update interval set to zero seconds --> changed to 60";
+      LOG(error) << "MFT DPs update interval set to zero seconds --> changed to 60";
       mDPsUpdateInterval = 60;
     }
+
     bool useCCDBtoConfigure = ic.options().get<bool>("use-ccdb-to-configure");
 
     mStart = ic.options().get<int64_t>("tstart");
     mEnd = ic.options().get<int64_t>("tend");
 
     if (useCCDBtoConfigure) {
-      LOG(INFO) << "Configuring via CCDB";
-      std::string ccdbpath = ic.options().get<std::string>("ccdb-path");
+      LOG(info) << "Configuring via CCDB";
+
       auto& mgr = CcdbManager::instance();
-      mgr.setURL(ccdbpath);
+      mgr.setURL(o2::base::NameConf::getCCDBServer());
       CcdbApi api;
       api.init(mgr.getURL());
       long ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
@@ -83,7 +87,7 @@ class MFTDCSDataProcessor : public o2::framework::Task
     }
 
     else {
-      LOG(INFO) << "Configuring via hardcoded strings";
+      LOG(info) << "Configuring via hardcoded strings";
       std::vector<std::string> aliases = {"MFT_PSU_ZONE/H[0..1]/D[0..4]/F[0..1]/Z[0..3]/Current/Analog",
                                           "MFT_PSU_ZONE/H[0..1]/D[0..4]/F[0..1]/Z[0..3]/Current/BackBias",
                                           "MFT_PSU_ZONE/H[0..1]/D[0..4]/F[0..1]/Z[0..3]/Current/Digital",
@@ -115,14 +119,14 @@ class MFTDCSDataProcessor : public o2::framework::Task
       }
     }
 
-    LOG(INFO) << "Listing Data Points for MFT:";
+    LOG(info) << "Listing Data Points for MFT:";
     for (auto& i : vect) {
-      LOG(INFO) << i;
+      LOG(info) << i;
     }
 
     mProcessor = std::make_unique<o2::mft::MFTDCSProcessor>();
     bool useVerboseMode = ic.options().get<bool>("use-verbose-mode");
-    LOG(INFO) << " ************************* Verbose?" << useVerboseMode;
+    LOG(info) << " ************************* Verbose?" << useVerboseMode;
 
     if (useVerboseMode) {
       mProcessor->useVerboseMode();
@@ -144,7 +148,7 @@ class MFTDCSDataProcessor : public o2::framework::Task
     auto timeNow = HighResClock::now();
     Duration elapsedTime = timeNow - mTimer; // in seconds
 
-    LOG(INFO) << "mDPsUpdateInterval " << mDPsUpdateInterval << "[sec.]";
+    LOG(info) << "mDPsUpdateInterval " << mDPsUpdateInterval << "[sec.]";
 
     if (elapsedTime.count() >= mDPsUpdateInterval) {
       sendDPsoutput(pc.outputs());
@@ -190,7 +194,7 @@ class MFTDCSDataProcessor : public o2::framework::Task
     info.setEndValidityTimestamp(tend);
 
     auto image = o2::ccdb::CcdbApi::createObjectImage(&payload, &info);
-    LOG(INFO) << "Sending object " << info.getPath() << "/" << info.getFileName() << " of size " << image->size()
+    LOG(info) << "Sending object " << info.getPath() << "/" << info.getFileName() << " of size " << image->size()
               << " bytes, valid for " << info.getStartValidityTimestamp() << " : " << info.getEndValidityTimestamp();
     output.snapshot(Output{o2::calibration::Utils::gDataOriginCDBPayload, "MFT_DCSDPs", 0}, *image.get());
     output.snapshot(Output{o2::calibration::Utils::gDataOriginCDBWrapper, "MFT_DCSDPs", 0}, info);
@@ -219,11 +223,11 @@ DataProcessorSpec getMFTDCSDataProcessorSpec()
     outputs,
     AlgorithmSpec{adaptFromTask<o2::mft::MFTDCSDataProcessor>()},
     Options{
-      {"ccdb-path", VariantType::String, "http://localhost:8080", {"Path to CCDB"}},
       {"tstart", VariantType::Int64, -1ll, {"Start of validity timestamp"}},
       {"tend", VariantType::Int64, -1ll, {"End of validity timestamp"}},
       {"use-ccdb-to-configure", VariantType::Bool, false, {"Use CCDB to configure"}},
       {"use-verbose-mode", VariantType::Bool, false, {"Use verbose mode"}},
+      //{"configKeyValues", VariantType::String, "", {"Semicolon separated key=value strings"}},
       {"DPs-update-interval", VariantType::Int64, 600ll, {"Interval (in s) after which to update the DPs CCDB entry"}}}};
 }
 

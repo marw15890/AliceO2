@@ -111,7 +111,8 @@ class CTFCoder : public o2::ctf::CTFCoderBase
   template <typename VEC>
   void decode(const CTF::base& ec, VEC& buff);
 
-  void createCoders(const std::string& dictPath, o2::ctf::CTFCoderBase::OpType op);
+  void createCoders(const std::vector<char>& bufVec, o2::ctf::CTFCoderBase::OpType op) final;
+
   size_t estimateCompressedSize(const CompressedClusters& ccl);
 
   static size_t constexpr Alignment = 16;
@@ -149,25 +150,12 @@ class CTFCoder : public o2::ctf::CTFCoderBase
   void buildCoder(ctf::CTFCoderBase::OpType coderType, const CTF::container_t& ctf, CTF::Slots slot);
 
   bool mCombineColumns = false; // combine correlated columns
-
-  ClassDefNV(CTFCoder, 1);
 };
 
 template <typename source_T>
 void CTFCoder::buildCoder(ctf::CTFCoderBase::OpType coderType, const CTF::container_t& ctf, CTF::Slots slot)
 {
-  auto buildFrequencyTable = [](const CTF::container_t& ctf, CTF::Slots slot) -> rans::FrequencyTable {
-    rans::FrequencyTable frequencyTable;
-    auto block = ctf.getBlock(slot);
-    auto metaData = ctf.getMetadata(slot);
-    frequencyTable.addFrequencies(block.getDict(), block.getDict() + block.getNDict(), metaData.min, metaData.max);
-    return frequencyTable;
-  };
-  auto getSymbolTablePrecision = [](const CTF::container_t& ctf, CTF::Slots slot) -> int {
-    return ctf.getMetadata(slot).probabilityBits;
-  };
-
-  this->createCoder<source_T>(coderType, buildFrequencyTable(ctf, slot), getSymbolTablePrecision(ctf, slot), static_cast<int>(slot));
+  this->createCoder<source_T>(coderType, ctf.getFrequencyTable(slot), static_cast<int>(slot));
 }
 
 /// entropy-encode clusters to buffer with CTF
@@ -178,29 +166,29 @@ void CTFCoder::encode(VEC& buff, const CompressedClusters& ccl)
   using namespace detail;
   // what to do which each field: see o2::ctf::Metadata explanation
   constexpr MD optField[CTF::getNBlocks()] = {
-    MD::EENCODE, //qTotA
-    MD::EENCODE, //qMaxA
-    MD::EENCODE, //flagsA
-    MD::EENCODE, //rowDiffA
-    MD::EENCODE, //sliceLegDiffA
-    MD::EENCODE, //padResA
-    MD::EENCODE, //timeResA
-    MD::EENCODE, //sigmaPadA
-    MD::EENCODE, //sigmaTimeA
-    MD::EENCODE, //qPtA
-    MD::EENCODE, //rowA
-    MD::EENCODE, //sliceA
-    MD::EENCODE, //timeA
-    MD::EENCODE, //padA
-    MD::EENCODE, //qTotU
-    MD::EENCODE, //qMaxU
-    MD::EENCODE, //flagsU
-    MD::EENCODE, //padDiffU
-    MD::EENCODE, //timeDiffU
-    MD::EENCODE, //sigmaPadU
-    MD::EENCODE, //sigmaTimeU
-    MD::EENCODE, //nTrackClusters
-    MD::EENCODE  //nSliceRowClusters
+    MD::EENCODE, // qTotA
+    MD::EENCODE, // qMaxA
+    MD::EENCODE, // flagsA
+    MD::EENCODE, // rowDiffA
+    MD::EENCODE, // sliceLegDiffA
+    MD::EENCODE, // padResA
+    MD::EENCODE, // timeResA
+    MD::EENCODE, // sigmaPadA
+    MD::EENCODE, // sigmaTimeA
+    MD::EENCODE, // qPtA
+    MD::EENCODE, // rowA
+    MD::EENCODE, // sliceA
+    MD::EENCODE, // timeA
+    MD::EENCODE, // padA
+    MD::EENCODE, // qTotU
+    MD::EENCODE, // qMaxU
+    MD::EENCODE, // flagsU
+    MD::EENCODE, // padDiffU
+    MD::EENCODE, // timeDiffU
+    MD::EENCODE, // sigmaPadU
+    MD::EENCODE, // sigmaTimeU
+    MD::EENCODE, // nTrackClusters
+    MD::EENCODE  // nSliceRowClusters
   };
 
   // book output size with some margin
@@ -212,7 +200,7 @@ void CTFCoder::encode(VEC& buff, const CompressedClusters& ccl)
   if (mCombineColumns) {
     flags |= CTFHeader::CombinedColumns;
   }
-  ec->setHeader(CTFHeader{0, 1, 0, // dummy timestamp, version 1.0
+  ec->setHeader(CTFHeader{o2::detectors::DetID::TPC, 0, 1, 0, // dummy timestamp, version 1.0
                           ccl, flags});
   assignDictVersion(static_cast<o2::ctf::CTFDictHeader&>(ec->getHeader()));
   ec->getANSHeader().majorVersion = 0;

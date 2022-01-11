@@ -36,7 +36,7 @@ class CTFCoder : public o2::ctf::CTFCoderBase
 {
  public:
   CTFCoder() : o2::ctf::CTFCoderBase(CTF::getNBlocks(), o2::detectors::DetID::TOF) {}
-  ~CTFCoder() = default;
+  ~CTFCoder() final = default;
 
   /// entropy-encode clusters to buffer with CTF
   template <typename VEC>
@@ -46,7 +46,7 @@ class CTFCoder : public o2::ctf::CTFCoderBase
   template <typename VROF, typename VDIG, typename VPAT>
   void decode(const CTF::base& ec, VROF& rofRecVec, VDIG& cdigVec, VPAT& pattVec);
 
-  void createCoders(const std::string& dictPath, o2::ctf::CTFCoderBase::OpType op);
+  void createCoders(const std::vector<char>& bufVec, o2::ctf::CTFCoderBase::OpType op) final;
 
  private:
   /// compres compact clusters to CompressedInfos
@@ -58,9 +58,6 @@ class CTFCoder : public o2::ctf::CTFCoderBase
 
   void appendToTree(TTree& tree, CTF& ec);
   void readFromTree(TTree& tree, int entry, std::vector<ReadoutWindowData>& rofRecVec, std::vector<Digit>& cdigVec, std::vector<uint8_t>& pattVec);
-
- protected:
-  ClassDefNV(CTFCoder, 1);
 };
 
 ///___________________________________________________________________________________
@@ -188,14 +185,14 @@ void CTFCoder::decompress(const CompressedInfos& cc, VROF& rofRecVec, VDIG& cdig
     digCopy.resize(cc.ndigROF[irof]);
     for (uint32_t idig = 0; idig < cc.ndigROF[irof]; idig++) {
       auto& digit = digCopy[idig]; //cdigVec[digCount];
-      LOGF(DEBUG, "%d) TF=%d, TDC=%d, STRIP=%d, CH=%d", idig, cc.timeFrameInc[digCount], cc.timeTDCInc[digCount], cc.stripID[digCount], cc.chanInStrip[digCount]);
+      LOGF(debug, "%d) TF=%d, TDC=%d, STRIP=%d, CH=%d", idig, cc.timeFrameInc[digCount], cc.timeTDCInc[digCount], cc.stripID[digCount], cc.chanInStrip[digCount]);
       if (cc.timeFrameInc[digCount]) { // new time frame
         ctdc = cc.timeTDCInc[digCount];
         ctimeframe += cc.timeFrameInc[digCount];
       } else {
         ctdc += cc.timeTDCInc[digCount];
       }
-      LOGF(DEBUG, "BC=%ld, TDC=%d, TOT=%d, CH=%d", uint32_t(ctimeframe) * 64 + ctdc / 1024 + BCrow, ctdc % 1024, cc.tot[digCount], uint32_t(cc.stripID[digCount]) * 96 + cc.chanInStrip[digCount]);
+      LOGF(debug, "BC=%ld, TDC=%d, TOT=%d, CH=%d", uint32_t(ctimeframe) * 64 + ctdc / 1024 + BCrow, ctdc % 1024, cc.tot[digCount], uint32_t(cc.stripID[digCount]) * 96 + cc.chanInStrip[digCount]);
 
       digit.setBC(uint32_t(ctimeframe) * 64 + ctdc / 1024 + BCrow);
       digit.setTDC(ctdc % 1024);
@@ -228,7 +225,7 @@ void CTFCoder::decompress(const CompressedInfos& cc, VROF& rofRecVec, VDIG& cdig
   assert(digCount == cc.header.nDigits);
 
   if (digCount != cc.header.nDigits) {
-    LOG(ERROR) << "expected " << cc.header.nDigits << " but counted " << digCount << " in ROFRecords";
+    LOG(error) << "expected " << cc.header.nDigits << " but counted " << digCount << " in ROFRecords";
     throw std::runtime_error("mismatch between expected and counter number of digits");
   }
 }

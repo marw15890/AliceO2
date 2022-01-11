@@ -15,6 +15,7 @@
 /// @file   TOFChannelCalibratorSpec.h
 /// @brief  Device to calibrate TOF channles (offsets)
 
+#include "CommonUtils/NameConf.h"
 #include "TOFCalibration/TOFChannelCalibrator.h"
 #include "DetectorsCalibration/Utils.h"
 #include "DataFormatsTOF/CalibInfoTOF.h"
@@ -152,25 +153,25 @@ class TOFChannelCalibDevice : public o2::framework::Task
       startTimeChCalib = 0;
     }
 
-    LOG(DEBUG) << "startTimeLHCphase = " << startTimeLHCphase << ",  startTimeChCalib = " << startTimeChCalib;
+    LOG(debug) << "startTimeLHCphase = " << startTimeLHCphase << ",  startTimeChCalib = " << startTimeChCalib;
 
     mcalibTOFapi = new o2::tof::CalibTOFapi(long(0), &mPhase, &mTimeSlewing); // TODO: should we replace long(0) with tfcounter defined at the beginning of the method? we need the timestamp of the TF
 
     mCalibrator->setCalibTOFapi(mcalibTOFapi);
 
     if ((tfcounter - startTimeChCalib) > 60480000) { // number of TF in 1 week: 7*24*3600/10e-3 - with TF = 10 ms
-      LOG(INFO) << "Enlarging the range of the booked histogram since the latest CCDB entry is too old";
+      LOG(info) << "Enlarging the range of the booked histogram since the latest CCDB entry is too old";
       mCalibrator->setRange(mCalibrator->getRange() * 10); // we enlarge the range for the calibration in case the last valid object is too old (older than 1 week)
     }
 
     if (!mCosmics) {
       auto data = pc.inputs().get<gsl::span<T>>("input");
-      LOG(INFO) << "Processing TF " << tfcounter << " with " << data.size() << " tracks";
+      LOG(info) << "Processing TF " << tfcounter << " with " << data.size() << " tracks";
       mCalibrator->process(tfcounter, data);
       sendOutput(pc.outputs());
     } else {
       auto data = pc.inputs().get<gsl::span<T>>("input");
-      LOG(INFO) << "Processing TF " << tfcounter << " with " << data.size() << " tracks";
+      LOG(info) << "Processing TF " << tfcounter << " with " << data.size() << " tracks";
       mCalibrator->process(tfcounter, data);
       sendOutput(pc.outputs());
     }
@@ -207,7 +208,7 @@ class TOFChannelCalibDevice : public o2::framework::Task
     for (uint32_t i = 0; i < payloadVec.size(); i++) {
       auto& w = infoVec[i];
       auto image = o2::ccdb::CcdbApi::createObjectImage(&payloadVec[i], &w);
-      LOG(INFO) << "Sending object " << w.getPath() << "/" << w.getFileName() << " of size " << image->size()
+      LOG(info) << "Sending object " << w.getPath() << "/" << w.getFileName() << " of size " << image->size()
                 << " bytes, valid for " << w.getStartValidityTimestamp() << " : " << w.getEndValidityTimestamp();
 
       output.snapshot(Output{o2::calibration::Utils::gDataOriginCDBPayload, "TOF_CHANCALIB", i}, *image.get()); // vector<char>
@@ -259,7 +260,7 @@ DataProcessorSpec getTOFChannelCalibDeviceSpec(bool useCCDB, bool attachChannelO
       {"nbins", VariantType::Int, 1000, {"number of bins for t-texp"}},
       {"range", VariantType::Float, 24000.f, {"range for t-text"}},
       {"do-TOF-channel-calib-in-test-mode", VariantType::Bool, false, {"to run in test mode for simplification"}},
-      {"ccdb-path", VariantType::String, "http://ccdb-test.cern.ch:8080", {"Path to CCDB"}},
+      {"ccdb-path", VariantType::String, o2::base::NameConf::getCCDBServer(), {"Path to CCDB"}},
       {"update-at-end-of-run-only", VariantType::Bool, false, {"to update the CCDB only at the end of the run; has priority over calibrating in time slots"}},
       {"tf-per-slot", VariantType::Int64, INFINITE_TF_int64, {"number of TFs per calibration time slot"}},
       {"max-delay", VariantType::Int64, 0ll, {"number of slots in past to consider"}},

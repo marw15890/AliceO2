@@ -63,6 +63,7 @@ struct WorkflowImporter : public rapidjson::BaseReaderHandler<rapidjson::UTF8<>,
     IN_OUTPUT_DESCRIPTION,
     IN_OUTPUT_SUBSPEC,
     IN_OUTPUT_LIFETIME,
+    IN_OUTPUT_OPTIONS,
     IN_OPTION,
     IN_OPTION_NAME,
     IN_OPTION_TYPE,
@@ -170,6 +171,9 @@ struct WorkflowImporter : public rapidjson::BaseReaderHandler<rapidjson::UTF8<>,
       case State::IN_OUTPUT_LIFETIME:
         s << "IN_OUTPUT_LIFETIME";
         break;
+      case State::IN_OUTPUT_OPTIONS:
+        s << "IN_OUTPUT_OPTIONS";
+        break;
       case State::IN_OPTION:
         s << "IN_OPTION";
         break;
@@ -254,6 +258,8 @@ struct WorkflowImporter : public rapidjson::BaseReaderHandler<rapidjson::UTF8<>,
       push(State::IN_OPTION);
     } else if (in(State::IN_INPUT_OPTIONS)) {
       push(State::IN_OPTION);
+    } else if (in(State::IN_OUTPUT_OPTIONS)) {
+      push(State::IN_OPTION);
     } else if (in(State::IN_WORKFLOW_OPTIONS)) {
       push(State::IN_OPTION);
     } else if (in(State::IN_METADATA)) {
@@ -293,7 +299,7 @@ struct WorkflowImporter : public rapidjson::BaseReaderHandler<rapidjson::UTF8<>,
           dataProcessors.back().inputs.push_back(InputSpec(binding, {origin, description}, lifetime, inputOptions));
         }
       } else {
-        LOG(ERROR) << "Input w/o description but with subspec is not supported";
+        LOG(error) << "Input w/o description but with subspec is not supported";
       }
 
       inputOptions.clear();
@@ -376,6 +382,9 @@ struct WorkflowImporter : public rapidjson::BaseReaderHandler<rapidjson::UTF8<>,
         case VariantType::LabeledArrayDouble:
           opt = std::make_unique<ConfigParamSpec>(optionName, optionType, VariantJSONHelpers::read<VariantType::LabeledArrayDouble>(is), HelpString{optionHelp}, optionKind);
           break;
+        case VariantType::Dict:
+          opt = std::make_unique<ConfigParamSpec>(optionName, optionType, emptyDict(), HelpString{optionHelp}, optionKind);
+          break;
         default:
           opt = std::make_unique<ConfigParamSpec>(optionName, optionType, optionDefault, HelpString{optionHelp}, optionKind);
       }
@@ -386,6 +395,8 @@ struct WorkflowImporter : public rapidjson::BaseReaderHandler<rapidjson::UTF8<>,
         metadata.back().workflowOptions.push_back(*opt);
       } else if (previousIs(State::IN_INPUT_OPTIONS)) {
         inputOptions.push_back(*opt);
+      } else if (previousIs(State::IN_OUTPUT_OPTIONS)) {
+        outputOptions.push_back(*opt);
       } else {
         assert(false);
       }
@@ -404,6 +415,8 @@ struct WorkflowImporter : public rapidjson::BaseReaderHandler<rapidjson::UTF8<>,
       inputHasDescription = false;
       inputHasSubSpec = false;
     } else if (in(State::IN_INPUT_OPTIONS)) {
+      push(State::IN_OPTION);
+    } else if (in(State::IN_OUTPUT_OPTIONS)) {
       push(State::IN_OPTION);
     } else if (in(State::IN_OUTPUTS)) {
       push(State::IN_OUTPUT);
@@ -465,6 +478,8 @@ struct WorkflowImporter : public rapidjson::BaseReaderHandler<rapidjson::UTF8<>,
       outputHasSubSpec = true;
     } else if (in(State::IN_OUTPUT) && strncmp(str, "lifetime", length) == 0) {
       push(State::IN_OUTPUT_LIFETIME);
+    } else if (in(State::IN_OUTPUT) && strncmp(str, "metadata", length) == 0) {
+      push(State::IN_OUTPUT_OPTIONS);
     } else if (in(State::IN_DATAPROCESSOR) && strncmp(str, "name", length) == 0) {
       push(State::IN_DATAPROCESSOR_NAME);
     } else if (in(State::IN_DATAPROCESSOR) && strncmp(str, "ranks", length) == 0) {
@@ -654,6 +669,7 @@ struct WorkflowImporter : public rapidjson::BaseReaderHandler<rapidjson::UTF8<>,
   std::vector<DataProcessorInfo>& metadata;
   CommandInfo& command;
   std::vector<ConfigParamSpec> inputOptions;
+  std::vector<ConfigParamSpec> outputOptions;
   std::string binding;
   header::DataOrigin origin;
   header::DataDescription description;
@@ -700,7 +716,7 @@ bool WorkflowSerializationHelpers::import(std::istream& s,
       }
       std::cout << buf << std::endl;
     } else {
-      LOG(ERROR) << buf;
+      LOG(error) << buf;
     }
   }
   if (hasFatalImportError) {
@@ -811,6 +827,26 @@ void WorkflowSerializationHelpers::dump(std::ostream& out,
       }
       w.Key("lifetime");
       w.Uint((int)output.lifetime);
+      if (output.metadata.empty() == false) {
+        w.Key("metadata");
+        w.StartArray();
+        for (auto& metadata : output.metadata) {
+          w.StartObject();
+          w.Key("name");
+          w.String(metadata.name.c_str());
+          auto s = std::to_string(int(metadata.type));
+          w.Key("type");
+          w.String(s.c_str());
+          std::ostringstream oss;
+          oss << metadata.defaultValue;
+          w.Key("defaultValue");
+          w.String(oss.str().c_str());
+          w.Key("help");
+          w.String(metadata.help.c_str());
+          w.EndObject();
+        }
+        w.EndArray();
+      }
       w.EndObject();
     }
     w.EndArray();
@@ -840,6 +876,7 @@ void WorkflowSerializationHelpers::dump(std::ostream& out,
         case VariantType::LabeledArrayInt:
         case VariantType::LabeledArrayFloat:
         case VariantType::LabeledArrayDouble:
+        case VariantType::Dict:
           VariantJSONHelpers::write(oss, option.defaultValue);
           break;
         default:

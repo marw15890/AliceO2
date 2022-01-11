@@ -15,12 +15,11 @@
 
 #include "TRDWorkflow/TrackBasedCalibSpec.h"
 #include "TRDCalibration/TrackBasedCalib.h"
-#include "ReconstructionDataFormats/GlobalTrackID.h"
 #include "Framework/Task.h"
 #include "Framework/ConfigParamRegistry.h"
 #include "DetectorsBase/GeometryManager.h"
 #include "DetectorsBase/Propagator.h"
-#include "DetectorsCommonDataFormats/NameConf.h"
+#include "CommonUtils/NameConf.h"
 #include "DataFormatsParameters/GRPObject.h"
 #include "Headers/DataHeader.h"
 #include "DataFormatsGlobalTracking/RecoContainer.h"
@@ -45,7 +44,10 @@ class TRDTrackBasedCalibDevice : public Task
 
  private:
   std::shared_ptr<DataRequest> mDataRequest;
-  o2::trd::TrackBasedCalib mCalibrator; // gather input data for calibration of vD, ExB and gain
+  TrackBasedCalib mCalibrator; // gather input data for calibration of vD, ExB and gain
+  std::unique_ptr<Output> mOutput;
+  uint32_t mNumberOfProcessedTFs{0};
+  bool mDataHeaderSet{false};
 };
 
 void TRDTrackBasedCalibDevice::init(InitContext& ic)
@@ -59,27 +61,46 @@ void TRDTrackBasedCalibDevice::init(InitContext& ic)
 
 void TRDTrackBasedCalibDevice::run(ProcessingContext& pc)
 {
-
+  if (!mDataHeaderSet) {
+    mOutput = std::make_unique<Output>(o2::header::gDataOriginTRD, "ANGRESHISTS", 0, Lifetime::Timeframe);
+    mDataHeaderSet = true;
+  }
   RecoContainer recoData;
   recoData.collectData(pc, *mDataRequest.get());
-
-  mCalibrator.calculateAngResHistos(recoData);
-
-  pc.outputs().snapshot(Output{o2::header::gDataOriginTRD, "ANGRESHISTS", 0, Lifetime::Timeframe}, mCalibrator.getAngResHistos());
+  mCalibrator.setInput(recoData);
+  mCalibrator.calculateAngResHistos();
+  ++mNumberOfProcessedTFs;
+  if (mNumberOfProcessedTFs % 200 == 0) {
+    pc.outputs().snapshot(*mOutput, mCalibrator.getAngResHistos());
+    mDataHeaderSet = false;
+    mNumberOfProcessedTFs = 0;
+    mCalibrator.reset();
+  }
 }
 
 void TRDTrackBasedCalibDevice::endOfStream(EndOfStreamContext& ec)
 {
-  LOGF(INFO, "Added in total %i entries to angular residual histograms",
+  if (mNumberOfProcessedTFs > 0) {
+    ec.outputs().snapshot(*mOutput, mCalibrator.getAngResHistos());
+  }
+  LOGF(info, "Added in total %i entries to angular residual histograms",
        mCalibrator.getAngResHistos().getNEntries());
 }
 
-DataProcessorSpec getTRDTrackBasedCalibSpec()
+DataProcessorSpec getTRDTrackBasedCalibSpec(o2::dataformats::GlobalTrackID::mask_t src)
 {
   std::vector<OutputSpec> outputs;
   auto dataRequest = std::make_shared<DataRequest>();
 
-  GTrackID::mask_t srcTrk = GTrackID::getSourcesMask("ITS-TPC-TRD"); // possibly also use TPC-TRD?
+  GTrackID::mask_t srcTrk;
+  if (GTrackID::includesSource(GTrackID::Source::ITSTPC, src)) {
+    LOGF(info, "Found ITS-TPC tracks as input, loading ITS-TPC-TRD");
+    srcTrk |= GTrackID::getSourcesMask("ITS-TPC-TRD");
+  }
+  if (GTrackID::includesSource(GTrackID::Source::TPC, src)) {
+    LOGF(info, "Found TPC tracks as input, loading TPC-TRD");
+    srcTrk |= GTrackID::getSourcesMask("TPC-TRD");
+  }
   GTrackID::mask_t srcClu = GTrackID::getSourcesMask("TRD");         // we don't need all clusters, only TRD tracklets
   dataRequest->requestTracks(srcTrk, false);
   dataRequest->requestClusters(srcClu, false);

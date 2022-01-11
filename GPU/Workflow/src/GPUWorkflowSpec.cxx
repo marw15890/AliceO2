@@ -36,15 +36,14 @@
 #include "TPCReconstruction/TPCFastTransformHelperO2.h"
 #include "DataFormatsTPC/Digit.h"
 #include "TPCFastTransform.h"
-#include "TPCdEdxCalibrationSplines.h"
-#include "DataFormatsTPC/CalibdEdxCorrection.h"
+#include "DataFormatsTPC/CalibdEdxContainer.h"
 #include "DPLUtils/DPLRawParser.h"
 #include "DPLUtils/DPLRawPageSequencer.h"
 #include "DetectorsBase/MatLayerCylSet.h"
 #include "DetectorsBase/Propagator.h"
 #include "DetectorsBase/GeometryManager.h"
 #include "DetectorsRaw/HBFUtils.h"
-#include "DetectorsCommonDataFormats/NameConf.h"
+#include "CommonUtils/NameConf.h"
 #include "TPCBase/RDHUtils.h"
 #include "GPUO2InterfaceConfiguration.h"
 #include "GPUO2InterfaceQA.h"
@@ -107,9 +106,8 @@ DataProcessorSpec getGPURecoWorkflowSpec(gpuworkflow::CompletionPolicyData* poli
     std::unique_ptr<GPUO2Interface> tracker;
     std::unique_ptr<GPUDisplayBackend> displayBackend;
     std::unique_ptr<TPCFastTransform> fastTransform;
-    std::unique_ptr<TPCdEdxCalibrationSplines> dEdxSplines;
     std::unique_ptr<TPCPadGainCalib> tpcPadGainCalib;
-    std::unique_ptr<o2::tpc::CalibdEdxCorrection> dEdxCorrection;
+    std::unique_ptr<o2::tpc::CalibdEdxContainer> dEdxCalibContainer;
     std::unique_ptr<o2::trd::GeometryFlat> trdGeometry;
     std::unique_ptr<GPUO2InterfaceConfiguration> config;
     int qaTaskMask = 0;
@@ -154,7 +152,7 @@ DataProcessorSpec getGPURecoWorkflowSpec(gpuworkflow::CompletionPolicyData* poli
       auto& hbfu = o2::raw::HBFUtils::Instance();
       processAttributes->tfSettings.simStartOrbit = hbfu.getFirstIRofTF(o2::InteractionRecord(0, hbfu.orbitFirstSampled)).orbit;
 
-      LOG(INFO) << "Initializing run paramerers from GRP bz=" << config.configGRP.solenoidBz << " cont=" << grp->isDetContinuousReadOut(o2::detectors::DetID::TPC);
+      LOG(info) << "Initializing run paramerers from GRP bz=" << config.configGRP.solenoidBz << " cont=" << grp->isDetContinuousReadOut(o2::detectors::DetID::TPC);
 
       confParam = config.ReadConfigurableParam();
       processAttributes->allocateOutputOnTheFly = confParam.allocateOutputOnTheFly;
@@ -165,7 +163,7 @@ DataProcessorSpec getGPURecoWorkflowSpec(gpuworkflow::CompletionPolicyData* poli
 #ifdef GPUCA_BUILD_EVENT_DISPLAY
         processAttributes->displayBackend.reset(new GPUDisplayBackendGlfw);
         config.configProcessing.eventDisplay = processAttributes->displayBackend.get();
-        LOG(INFO) << "Event display enabled";
+        LOG(info) << "Event display enabled";
 #else
         throw std::runtime_error("Standalone Event Display not enabled at build time!");
 #endif
@@ -178,7 +176,7 @@ DataProcessorSpec getGPURecoWorkflowSpec(gpuworkflow::CompletionPolicyData* poli
         int myId = ic.services().get<const o2::framework::DeviceSpec>().inputTimesliceId;
         int idMax = ic.services().get<const o2::framework::DeviceSpec>().maxInputTimeslices;
         config.configProcessing.deviceNum = myId;
-        LOG(INFO) << "GPU device number selected from pipeline id: " << myId << " / " << idMax;
+        LOG(info) << "GPU device number selected from pipeline id: " << myId << " / " << idMax;
       }
       if (config.configProcessing.debugLevel >= 3 && processAttributes->verbosity == 0) {
         processAttributes->verbosity = 1;
@@ -254,28 +252,31 @@ DataProcessorSpec getGPURecoWorkflowSpec(gpuworkflow::CompletionPolicyData* poli
       }
 
       // load from file
-      if (confParam.dEdxFile.size()) {
-        processAttributes->dEdxSplines.reset(new TPCdEdxCalibrationSplines(confParam.dEdxFile.c_str()));
+      if (!confParam.dEdxPolTopologyCorrFile.empty() || !confParam.dEdxCorrFile.empty() || !confParam.dEdxSplineTopologyCorrFile.empty()) {
+        processAttributes->dEdxCalibContainer.reset(new o2::tpc::CalibdEdxContainer());
+        if (!confParam.dEdxPolTopologyCorrFile.empty()) {
+          LOGP(info, "Loading dE/dx polynomial track topology correction from file: {}", confParam.dEdxPolTopologyCorrFile);
+          processAttributes->dEdxCalibContainer->loadPolTopologyCorrectionFromFile(confParam.dEdxPolTopologyCorrFile);
+        } else if (!confParam.dEdxSplineTopologyCorrFile.empty()) {
+          LOGP(info, "Loading dE/dx spline track topology correction from file: {}", confParam.dEdxSplineTopologyCorrFile);
+          processAttributes->dEdxCalibContainer->loadSplineTopologyCorrectionFromFile(confParam.dEdxSplineTopologyCorrFile);
+        }
+        if (!confParam.dEdxCorrFile.empty()) {
+          LOGP(info, "Loading dEdx correction from file: {}", confParam.dEdxCorrFile);
+          processAttributes->dEdxCalibContainer->loadResidualCorrectionFromFile(confParam.dEdxCorrFile);
+        }
       } else {
-        processAttributes->dEdxSplines.reset(new TPCdEdxCalibrationSplines);
+        processAttributes->dEdxCalibContainer.reset(new o2::tpc::CalibdEdxContainer());
       }
-      config.configCalib.dEdxSplines = processAttributes->dEdxSplines.get();
-
-      if (!confParam.dEdxCorrFile.empty()) {
-        LOGP(info, "Loading dEdx correction file: {}", confParam.dEdxCorrFile);
-        processAttributes->dEdxCorrection.reset(new o2::tpc::CalibdEdxCorrection(confParam.dEdxCorrFile));
-      } else {
-        processAttributes->dEdxCorrection.reset(new o2::tpc::CalibdEdxCorrection());
-      }
-      config.configCalib.dEdxCorrection = processAttributes->dEdxCorrection.get();
+      config.configCalib.dEdxCalibContainer = processAttributes->dEdxCalibContainer.get();
 
       if (std::filesystem::exists(confParam.gainCalibFile)) {
-        LOG(INFO) << "Loading tpc gain correction from file " << confParam.gainCalibFile;
+        LOG(info) << "Loading tpc gain correction from file " << confParam.gainCalibFile;
         const auto* gainMap = o2::tpc::utils::readCalPads(confParam.gainCalibFile, "GainMap")[0];
         processAttributes->tpcPadGainCalib = GPUO2Interface::getPadGainCalib(*gainMap);
       } else {
         if (not confParam.gainCalibFile.empty()) {
-          LOG(WARN) << "Couldn't find tpc gain correction file " << confParam.gainCalibFile << ". Not applying any gain correction.";
+          LOG(warn) << "Couldn't find tpc gain correction file " << confParam.gainCalibFile << ". Not applying any gain correction.";
         }
         processAttributes->tpcPadGainCalib = GPUO2Interface::getPadGainCalibDefault();
       }
@@ -308,35 +309,48 @@ DataProcessorSpec getGPURecoWorkflowSpec(gpuworkflow::CompletionPolicyData* poli
 
     auto& callbacks = ic.services().get<CallbackService>();
     callbacks.set(CallbackService::Id::RegionInfoCallback, [&processAttributes, confParam](FairMQRegionInfo const& info) {
-      if (info.size) {
-        int fd = 0;
-        if (confParam.mutexMemReg) {
-          mode_t mask = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH;
-          fd = open("/tmp/o2_gpu_memlock_mutex.lock", O_RDWR | O_CREAT | O_CLOEXEC, mask);
-          if (fd == -1) {
-            throw std::runtime_error("Error opening lock file");
-          }
-          fchmod(fd, mask);
-          if (lockf(fd, F_LOCK, 0)) {
-            throw std::runtime_error("Error locking file");
-          }
+      if (info.size == 0) {
+        return;
+      }
+      if (confParam.registerSelectedSegmentIds != -1 && info.managed && info.id != confParam.registerSelectedSegmentIds) {
+        return;
+      }
+      int fd = 0;
+      if (confParam.mutexMemReg) {
+        mode_t mask = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH;
+        fd = open("/tmp/o2_gpu_memlock_mutex.lock", O_RDWR | O_CREAT | O_CLOEXEC, mask);
+        if (fd == -1) {
+          throw std::runtime_error("Error opening lock file");
         }
-        auto& tracker = processAttributes->tracker;
-        if (tracker->registerMemoryForGPU(info.ptr, info.size)) {
-          throw std::runtime_error("Error registering memory for GPU");
+        fchmod(fd, mask);
+        if (lockf(fd, F_LOCK, 0)) {
+          throw std::runtime_error("Error locking file");
         }
-        if (confParam.mutexMemReg) {
-          if (lockf(fd, F_ULOCK, 0)) {
-            throw std::runtime_error("Error unlocking file");
-          }
-          close(fd);
+      }
+      auto& tracker = processAttributes->tracker;
+      std::chrono::time_point<std::chrono::high_resolution_clock> start, end;
+      if (confParam.benchmarkMemoryRegistration) {
+        start = std::chrono::high_resolution_clock::now();
+      }
+      if (tracker->registerMemoryForGPU(info.ptr, info.size)) {
+        throw std::runtime_error("Error registering memory for GPU");
+      }
+      if (confParam.benchmarkMemoryRegistration) {
+        end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> elapsed_seconds = end - start;
+        LOG(info) << "Memory registration time (0x" << info.ptr << ", " << info.size << " bytes): " << elapsed_seconds.count() << " s";
+      }
+      if (confParam.mutexMemReg) {
+        if (lockf(fd, F_ULOCK, 0)) {
+          throw std::runtime_error("Error unlocking file");
         }
+        close(fd);
       }
     });
 
     // the callback to be set as hook at stop of processing for the framework
     auto printTiming = []() {
-      LOGF(INFO, "TPC CATracker total timing: Cpu: %.3e Real: %.3e s in %d slots", timer.CpuTime(), timer.RealTime(), timer.Counter() - 1);
+      LOGF(info, "TPC CATracker total timing: Cpu: %.3e Real: %.3e s in %d slots", timer.CpuTime(), timer.RealTime(), timer.Counter() - 1);
     };
     ic.services().get<CallbackService>().set(CallbackService::Id::Stop, printTiming);
 
@@ -418,7 +432,7 @@ DataProcessorSpec getGPURecoWorkflowSpec(gpuworkflow::CompletionPolicyData* poli
             offset += tpcZSonTheFlySizes[i * NEndpoints + j];
           }
           if (verbosity >= 1) {
-            LOG(INFO) << "GOT ZS on the fly pages FOR SECTOR " << i << " ->  pages: " << pageSector;
+            LOG(info) << "GOT ZS on the fly pages FOR SECTOR " << i << " ->  pages: " << pageSector;
           }
         }
       }
@@ -458,7 +472,7 @@ DataProcessorSpec getGPURecoWorkflowSpec(gpuworkflow::CompletionPolicyData* poli
         }
       } else if (!specconfig.zsOnTheFly) {
         if (verbosity) {
-          LOGF(INFO, "running tracking for sector(s) 0x%09x", processAttributes->tpcSectorMask);
+          LOGF(info, "running tracking for sector(s) 0x%09x", processAttributes->tpcSectorMask);
         }
       }
 
@@ -533,7 +547,7 @@ DataProcessorSpec getGPURecoWorkflowSpec(gpuworkflow::CompletionPolicyData* poli
             region.allocator = [name, &buffer, &pc, outputSpec = std::move(outputSpec), verbosity, offset](size_t size) -> void* {
               size += offset;
               if (verbosity) {
-                LOG(INFO) << "ALLOCATING " << size << " bytes for " << std::get<DataOrigin>(outputSpec).template as<std::string>() << "/" << std::get<DataDescription>(outputSpec).template as<std::string>() << "/" << std::get<2>(outputSpec);
+                LOG(info) << "ALLOCATING " << size << " bytes for " << std::get<DataOrigin>(outputSpec).template as<std::string>() << "/" << std::get<DataDescription>(outputSpec).template as<std::string>() << "/" << std::get<2>(outputSpec);
               }
               std::chrono::time_point<std::chrono::high_resolution_clock> start, end;
               if (verbosity) {
@@ -543,7 +557,7 @@ DataProcessorSpec getGPURecoWorkflowSpec(gpuworkflow::CompletionPolicyData* poli
               if (verbosity) {
                 end = std::chrono::high_resolution_clock::now();
                 std::chrono::duration<double> elapsed_seconds = end - start;
-                LOG(INFO) << "Allocation time for " << name << " (" << size << " bytes)" << ": " << elapsed_seconds.count() << "s";
+                LOG(info) << "Allocation time for " << name << " (" << size << " bytes)" << ": " << elapsed_seconds.count() << "s";
               }
               return (buffer.second = buffer.first->get().data()) + offset;
             };
@@ -630,7 +644,7 @@ DataProcessorSpec getGPURecoWorkflowSpec(gpuworkflow::CompletionPolicyData* poli
       bool createEmptyOutput = false;
       if (retVal != 0) {
         if (retVal == 3 && processAttributes->config->configProcessing.ignoreNonFatalGPUErrors) {
-          LOG(ERROR) << "GPU Reconstruction aborted with non fatal error code, ignoring";
+          LOG(error) << "GPU Reconstruction aborted with non fatal error code, ignoring";
           createEmptyOutput = true;
         } else {
           throw std::runtime_error("tracker returned error code " + std::to_string(retVal));
@@ -688,7 +702,7 @@ DataProcessorSpec getGPURecoWorkflowSpec(gpuworkflow::CompletionPolicyData* poli
         }
       }
 
-      LOG(INFO) << "found " << ptrs.nOutputTracksTPCO2 << " track(s)";
+      LOG(info) << "found " << ptrs.nOutputTracksTPCO2 << " track(s)";
 
       if (specconfig.outputCompClusters) {
         CompressedClustersROOT compressedClusters = *ptrs.tpcCompressedClusters;
@@ -746,7 +760,7 @@ DataProcessorSpec getGPURecoWorkflowSpec(gpuworkflow::CompletionPolicyData* poli
         processAttributes->qa->cleanup();
       }
       timer.Stop();
-      LOG(INFO) << "GPU Reoncstruction time for this TF " << timer.CpuTime() - cput << " s (cpu), " << timer.RealTime() - realt << " s (wall)";
+      LOG(info) << "GPU Reoncstruction time for this TF " << timer.CpuTime() - cput << " s (cpu), " << timer.RealTime() - realt << " s (wall)";
     };
 
     return processingFct;

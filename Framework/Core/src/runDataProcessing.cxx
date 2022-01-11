@@ -241,7 +241,7 @@ int calculateExitCode(DriverInfo& driverInfo, DeviceSpecs& deviceSpecs, DeviceIn
 {
   std::regex regexp(R"(^\[([\d+:]*)\]\[\w+\] )");
   if (!driverInfo.lastError.empty()) {
-    LOGP(ERROR, "SEVERE: DPL driver encountered an error while running.\n{}",
+    LOGP(error, "SEVERE: DPL driver encountered an error while running.\n{}",
          driverInfo.lastError);
     return 1;
   }
@@ -249,12 +249,19 @@ int calculateExitCode(DriverInfo& driverInfo, DeviceSpecs& deviceSpecs, DeviceIn
     auto& info = infos[di];
     auto& spec = deviceSpecs[di];
     if (info.maxLogLevel >= driverInfo.minFailureLevel) {
-      LOGP(ERROR, "SEVERE: Device {} ({}) had at least one message above severity {}: {}",
+      LOGP(error, "SEVERE: Device {} ({}) had at least one message above severity {}: {}",
            spec.name,
            info.pid,
            info.minFailureLevel,
            std::regex_replace(info.firstSevereError, regexp, ""));
       return 1;
+    }
+    if (info.exitStatus != 0) {
+      LOGP(error, "SEVERE: Device {} ({}) returned with {}",
+           spec.name,
+           info.pid,
+           info.exitStatus);
+      return info.exitStatus;
     }
   }
   return 0;
@@ -291,6 +298,7 @@ void createPipes(int* pipes)
 volatile sig_atomic_t graceful_exit = false;
 volatile sig_atomic_t forceful_exit = false;
 volatile sig_atomic_t sigchld_requested = false;
+volatile sig_atomic_t double_sigint = false;
 
 static void handle_sigint(int)
 {
@@ -298,6 +306,13 @@ static void handle_sigint(int)
     graceful_exit = true;
   } else {
     forceful_exit = true;
+    // We keep track about forceful exiting via
+    // a double SIGINT, so that we do not print
+    // any extra message. This means that if the
+    // forceful_exit is set by the timer, we will
+    // get an error message about each child which
+    // did not gracefully exited.
+    double_sigint = true;
   }
 }
 
@@ -316,7 +331,7 @@ void spawnRemoteDevice(std::string const& forwardedStdin,
                        DeviceExecution& execution,
                        std::vector<DeviceInfo>& deviceInfos)
 {
-  LOG(INFO) << "Starting " << spec.id << " as remote device";
+  LOG(info) << "Starting " << spec.id << " as remote device";
   DeviceInfo info;
   // FIXME: we should make sure we do not sent a kill to pid 0.
   info.pid = 0;
@@ -380,7 +395,7 @@ void websocket_callback(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf)
   }
   if (nread < 0) {
     // FIXME: should I close?
-    LOG(ERROR) << "websocket_callback: Error while reading from websocket";
+    LOG(error) << "websocket_callback: Error while reading from websocket";
     uv_read_stop(stream);
     uv_close((uv_handle_t*)stream, close_websocket);
     return;
@@ -389,7 +404,7 @@ void websocket_callback(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf)
     LOG(debug3) << "Parsing request with " << handler << " with " << nread << " bytes";
     parse_http_request(buf->base, nread, handler);
   } catch (WSError& e) {
-    LOG(ERROR) << "Error while parsing request: " << e.message;
+    LOG(error) << "Error while parsing request: " << e.message;
     handler->error(e.code, e.message.c_str());
   }
 }
@@ -535,8 +550,7 @@ void ws_connect_callback(uv_stream_t* server, int status)
   uv_tcp_t* client = (uv_tcp_t*)malloc(sizeof(uv_tcp_t));
   uv_tcp_init(serverContext->loop, client);
   if (uv_accept(server, (uv_stream_t*)client) == 0) {
-    auto handler = std::make_unique<ControlWebSocketHandler>(*serverContext);
-    client->data = new WSDPLHandler((uv_stream_t*)client, serverContext, std::move(handler));
+    client->data = new WSDPLHandler((uv_stream_t*)client, serverContext);
     uv_read_start((uv_stream_t*)client, (uv_alloc_cb)my_alloc_cb, websocket_callback);
   } else {
     uv_close((uv_handle_t*)client, nullptr);
@@ -553,22 +567,22 @@ void stream_config(uv_work_t* req)
   StreamConfigContext* context = (StreamConfigContext*)req->data;
   size_t result = write(context->fd, context->configuration.data(), context->configuration.size());
   if (result != context->configuration.size()) {
-    LOG(ERROR) << "Unable to pass configuration to children";
+    LOG(error) << "Unable to pass configuration to children";
   }
   {
     auto error = fsync(context->fd);
     switch (error) {
       case EBADF:
-        LOGP(ERROR, "EBADF while flushing child stdin");
+        LOGP(error, "EBADF while flushing child stdin");
         break;
       case EINVAL:
-        LOGP(ERROR, "EINVAL while flushing child stdin");
+        LOGP(error, "EINVAL while flushing child stdin");
         break;
       case EINTR:
-        LOGP(ERROR, "EINTR while flushing child stdin");
+        LOGP(error, "EINTR while flushing child stdin");
         break;
       case EIO:
-        LOGP(ERROR, "EIO while flushing child stdin");
+        LOGP(error, "EIO while flushing child stdin");
         break;
       default:;
     }
@@ -577,13 +591,13 @@ void stream_config(uv_work_t* req)
     auto error = close(context->fd); // Not allowing further communication...
     switch (error) {
       case EBADF:
-        LOGP(ERROR, "EBADF while closing child stdin");
+        LOGP(error, "EBADF while closing child stdin");
         break;
       case EINTR:
-        LOGP(ERROR, "EINTR while closing child stdin");
+        LOGP(error, "EINTR while closing child stdin");
         break;
       case EIO:
-        LOGP(ERROR, "EIO while closing child stdin");
+        LOGP(error, "EIO while closing child stdin");
         break;
       default:;
     }
@@ -597,17 +611,8 @@ struct DeviceRef {
 struct DeviceStdioContext {
   int childstdin[2];
   int childstdout[2];
-  int childstderr[2];
 };
 
-void prepareStdio(std::vector<DeviceStdioContext>& deviceStdio)
-{
-  for (auto& context : deviceStdio) {
-    createPipes(context.childstdin);
-    createPipes(context.childstdout);
-    createPipes(context.childstderr);
-  }
-}
 void handleSignals()
 {
   struct sigaction sa_handle_int;
@@ -637,10 +642,6 @@ void handleChildrenStdio(uv_loop_t* loop,
   for (size_t i = 0; i < childFds.size(); ++i) {
     auto& childstdin = childFds[i].childstdin;
     auto& childstdout = childFds[i].childstdout;
-    auto& childstderr = childFds[i].childstderr;
-    close(childstdin[0]);
-    close(childstdout[1]);
-    close(childstderr[1]);
 
     uv_work_t* req = (uv_work_t*)malloc(sizeof(uv_work_t));
     req->data = new StreamConfigContext{forwardedStdin, childstdin[1]};
@@ -650,11 +651,7 @@ void handleChildrenStdio(uv_loop_t* loop,
     // reading from child.
     int resultCode = fcntl(childstdout[0], F_SETFL, O_NONBLOCK);
     if (resultCode == -1) {
-      LOGP(ERROR, "Error while setting the socket to non-blocking: {}", strerror(errno));
-    }
-    resultCode = fcntl(childstderr[0], F_SETFL, O_NONBLOCK);
-    if (resultCode == -1) {
-      LOGP(ERROR, "Error while setting the socket to non-blocking: {}", strerror(errno));
+      LOGP(error, "Error while setting the socket to non-blocking: {}", strerror(errno));
     }
 
     /// Add pollers for stdout and stderr
@@ -672,7 +669,6 @@ void handleChildrenStdio(uv_loop_t* loop,
     };
 
     addPoller(i, childstdout[0]);
-    addPoller(i, childstderr[0]);
   }
 }
 
@@ -720,23 +716,22 @@ void spawnDevice(DeviceRef ref,
     // For stdin, we close the write part of the pipe, the old descriptor,
     // and then we replace it with the read part of the pipe.
     // We also close all the filedescriptors for our sibilings.
-    for (size_t i = 0; i < childFds.size(); ++i) {
-      close(childFds[i].childstdin[1]);
-      close(childFds[i].childstdout[0]);
-      close(childFds[i].childstderr[0]);
-      if (i == ref.index) {
+    struct rlimit rlim;
+    getrlimit(RLIMIT_NOFILE, &rlim);
+    // We close all FD, but the one which are actually
+    // used to communicate with the driver.
+    for (size_t i = 0; i < rlim.rlim_cur; ++i) {
+      if (childFds[ref.index].childstdin[0] == i) {
         continue;
       }
-      close(childFds[i].childstdin[0]);
-      close(childFds[i].childstdout[1]);
-      close(childFds[i].childstderr[1]);
+      if (childFds[ref.index].childstdout[1] == i) {
+        continue;
+      }
+      close(i);
     }
-    close(STDIN_FILENO);
-    close(STDOUT_FILENO);
-    close(STDERR_FILENO);
     dup2(childFds[ref.index].childstdin[0], STDIN_FILENO);
     dup2(childFds[ref.index].childstdout[1], STDOUT_FILENO);
-    dup2(childFds[ref.index].childstderr[1], STDERR_FILENO);
+    dup2(childFds[ref.index].childstdout[1], STDERR_FILENO);
 
     auto portS = std::to_string(driverInfo.tracyPort);
     setenv("TRACY_PORT", portS.c_str(), 1);
@@ -755,6 +750,8 @@ void spawnDevice(DeviceRef ref,
     }
     execvp(execution.args[0], execution.args.data());
   }
+  close(childFds[ref.index].childstdin[0]);
+  close(childFds[ref.index].childstdout[1]);
   if (varmap.count("post-fork-command")) {
     auto templateCmd = varmap["post-fork-command"];
     auto cmd = fmt::format(templateCmd.as<std::string>(),
@@ -782,7 +779,7 @@ void spawnDevice(DeviceRef ref,
     }
   }
 
-  LOG(INFO) << "Starting " << spec.id << " on pid " << id;
+  LOG(info) << "Starting " << spec.id << " on pid " << id;
   DeviceInfo info;
   info.pid = id;
   info.active = true;
@@ -930,8 +927,17 @@ bool processSigChild(DeviceInfos& infos)
     if (pid > 0) {
       int es = WEXITSTATUS(status);
 
-      if (es) {
-        hasError = true;
+      if (WIFEXITED(status) == false || es != 0) {
+        es = WIFEXITED(status) ? es : 128 + es;
+        // No need to print anything if the user
+        // force quitted doing a double Ctrl-C.
+        if (double_sigint) {
+        } else if (forceful_exit) {
+          LOGP(error, "pid {} was forcefully terminated after being requested to quit", pid);
+        } else {
+          LOGP(error, "pid {} crashed with {}", pid, es);
+        }
+        hasError |= true;
       }
       for (auto& info : infos) {
         if (info.pid == pid) {
@@ -951,14 +957,14 @@ void doDPLException(RuntimeErrorRef& e, char const* processName)
 {
   auto& err = o2::framework::error_from_ref(e);
   if (err.maxBacktrace != 0) {
-    LOGP(ERROR,
+    LOGP(fatal,
          "Unhandled o2::framework::runtime_error reached the top of main of {}, device shutting down."
          "\n Reason: "
          "\n Backtrace follow: \n",
          processName, err.what);
-    backtrace_symbols_fd(err.backtrace, err.maxBacktrace, STDERR_FILENO);
+    demangled_backtrace_symbols(err.backtrace, err.maxBacktrace, STDERR_FILENO);
   } else {
-    LOGP(ERROR,
+    LOGP(fatal,
          "Unhandled o2::framework::runtime_error reached the top of main of {}, device shutting down."
          "\n Reason: "
          "\n Recompile with DPL_ENABLE_BACKTRACE=1 to get more information.",
@@ -969,9 +975,9 @@ void doDPLException(RuntimeErrorRef& e, char const* processName)
 void doUnknownException(std::string const& s, char const* processName)
 {
   if (s.empty()) {
-    LOGP(ERROR, "unknown error while setting up workflow in {}.", processName);
+    LOGP(fatal, "unknown error while setting up workflow in {}.", processName);
   } else {
-    LOGP(ERROR, "error while setting up workflow in {}: {}", processName, s);
+    LOGP(fatal, "error while setting up workflow in {}: {}", processName, s);
   }
 }
 
@@ -979,7 +985,7 @@ void doUnknownException(std::string const& s, char const* processName)
 {
   return AlgorithmSpec{adaptStateless(
     [&routes = spec.outputs](DataAllocator& outputs) {
-      LOG(INFO) << "Dry run enforced. Creating dummy messages to simulate computation happended";
+      LOG(info) << "Dry run enforced. Creating dummy messages to simulate computation happended";
       for (auto& route : routes) {
         auto concrete = DataSpecUtils::asConcreteDataMatcher(route.matcher);
         outputs.make<int>(Output{concrete.origin, concrete.description, concrete.subSpec}, 2);
@@ -989,7 +995,7 @@ void doUnknownException(std::string const& s, char const* processName)
 
 void doDefaultWorkflowTerminationHook()
 {
-  //LOG(INFO) << "Process " << getpid() << " is exiting.";
+  //LOG(info) << "Process " << getpid() << " is exiting.";
 }
 
 int doChild(int argc, char** argv, ServiceRegistry& serviceRegistry,
@@ -1001,7 +1007,7 @@ int doChild(int argc, char** argv, ServiceRegistry& serviceRegistry,
 {
   fair::Logger::SetConsoleColor(false);
   DeviceSpec const& spec = runningWorkflow.devices[ref.index];
-  LOG(INFO) << "Spawing new device " << spec.id << " in process with pid " << getpid();
+  LOG(info) << "Spawing new device " << spec.id << " in process with pid " << getpid();
 
   fair::mq::DeviceRunner runner{argc, argv};
 
@@ -1083,13 +1089,32 @@ void gui_callback(uv_timer_s* ctx)
   if (gui->plugin == nullptr) {
     return;
   }
+  void* draw_data = nullptr;
+  void* frame = nullptr;
+  int size;
+
   uint64_t frameStart = uv_hrtime();
   uint64_t frameLatency = frameStart - gui->frameLast;
-  *(gui->guiQuitRequested) = (gui->plugin->pollGUI(gui->window, gui->callback) == false);
-  uint64_t frameEnd = uv_hrtime();
-  *(gui->frameCost) = (frameEnd - frameStart) / 1000000.f;
-  *(gui->frameLatency) = frameLatency / 1000000.f;
-  gui->frameLast = frameStart;
+
+  // if less than 15ms have passed reuse old frame
+  if (frameLatency / 1000000 > 15) {
+    if (!gui->plugin->pollGUIPreRender(gui->window, (float)frameLatency / 1000000000.0f)) {
+      *(gui->guiQuitRequested) = true;
+      return;
+    }
+    draw_data = gui->plugin->pollGUIRender(gui->callback);
+    gui->plugin->pollGUIPostRender(gui->window, draw_data);
+  } else {
+    draw_data = gui->lastFrame;
+  }
+
+
+  if (frameLatency / 1000000 > 15) {
+    uint64_t frameEnd = uv_hrtime();
+    *(gui->frameCost) = (frameEnd - frameStart) / 1000000.f;
+    *(gui->frameLatency) = frameLatency / 1000000.f;
+    gui->frameLast = frameStart;
+  }
 }
 
 /// Force single stepping of the children
@@ -1097,6 +1122,12 @@ void single_step_callback(uv_timer_s* ctx)
 {
   DeviceInfos* infos = reinterpret_cast<DeviceInfos*>(ctx->data);
   killChildren(*infos, SIGUSR1);
+}
+
+void force_exit_callback(uv_timer_s* ctx)
+{
+  DeviceInfos* infos = reinterpret_cast<DeviceInfos*>(ctx->data);
+  killChildren(*infos, SIGKILL);
 }
 
 void dumpMetricsCallback(uv_timer_t* handle)
@@ -1109,6 +1140,7 @@ void dumpMetricsCallback(uv_timer_t* handle)
   performanceMetrics.push_back("aod-bytes-read-compressed");
   performanceMetrics.push_back("aod-file-read-info");
   performanceMetrics.push_back("table-bytes-.*");
+  performanceMetrics.push_back("total-timeframes.*");
   ResourcesMonitoringHelper::dumpMetricsToJSON(*(context->metrics),
                                                context->driver->metrics, *(context->specs), performanceMetrics);
 }
@@ -1162,7 +1194,7 @@ int runStateMachine(DataProcessorSpecs const& workflow,
       result = uv_dlopen("libO2FrameworkGUISupport.so", &supportLib);
 #endif
       if (result == -1) {
-        LOG(ERROR) << uv_dlerror(&supportLib);
+        LOG(error) << uv_dlerror(&supportLib);
         return nullptr;
       }
       void* callback = nullptr;
@@ -1170,7 +1202,7 @@ int runStateMachine(DataProcessorSpecs const& workflow,
 
       result = uv_dlsym(&supportLib, "dpl_plugin_callback", (void**)&dpl_plugin_callback);
       if (result == -1) {
-        LOG(ERROR) << uv_dlerror(&supportLib);
+        LOG(error) << uv_dlerror(&supportLib);
         return nullptr;
       }
       DPLPluginHandle* pluginInstance = dpl_plugin_callback(nullptr);
@@ -1182,7 +1214,7 @@ int runStateMachine(DataProcessorSpecs const& workflow,
     }
   }
   if (driverInfo.batch == false && window == nullptr && frameworkId.empty()) {
-    LOG(WARN) << "Could not create GUI. Switching to batch mode. Do you have GLFW on your system?";
+    LOG(warn) << "Could not create GUI. Switching to batch mode. Do you have GLFW on your system?";
     driverInfo.batch = true;
   }
   bool guiQuitRequested = false;
@@ -1279,6 +1311,8 @@ int runStateMachine(DataProcessorSpecs const& workflow,
 
   uv_timer_t force_step_timer;
   uv_timer_init(loop, &force_step_timer);
+  uv_timer_t force_exit_timer;
+  uv_timer_init(loop, &force_exit_timer);
 
   bool guiDeployedOnce = false;
   bool once = false;
@@ -1300,7 +1334,7 @@ int runStateMachine(DataProcessorSpecs const& workflow,
       auto currentTime = uv_hrtime();
       uint64_t diff = (currentTime - driverInfo.startTime) / 1000000000LL;
       if ((graceful_exit == false) && (driverInfo.timeout > 0) && (diff > driverInfo.timeout)) {
-        LOG(INFO) << "Timout ellapsed. Requesting to quit.";
+        LOG(info) << "Timout ellapsed. Requesting to quit.";
         graceful_exit = true;
       }
     }
@@ -1352,9 +1386,9 @@ int runStateMachine(DataProcessorSpecs const& workflow,
         }
         driverInfo.states.push_back(DriverState::RUNNING);
         //        driverInfo.states.push_back(DriverState::REDEPLOY_GUI);
-        LOG(INFO) << "O2 Data Processing Layer initialised. We brake for nobody.";
+        LOG(info) << "O2 Data Processing Layer initialised. We brake for nobody.";
 #ifdef NDEBUG
-        LOGF(info, "Optimised build. O2DEBUG / LOG(DEBUG) / LOGF(DEBUG) / assert statement will not be shown.");
+        LOGF(info, "Optimised build. O2DEBUG / LOG(debug) / LOGF(debug) / assert statement will not be shown.");
 #endif
         break;
       case DriverState::IMPORT_CURRENT_WORKFLOW:
@@ -1388,7 +1422,8 @@ int runStateMachine(DataProcessorSpecs const& workflow,
         try {
           auto workflowState = WorkflowHelpers::verifyWorkflow(workflow);
           if (driverInfo.batch == true && workflowState == WorkflowParsingState::Empty) {
-            throw runtime_error("Empty workflow provided while running in batch mode.");
+            LOGP(error, "Empty workflow provided while running in batch mode.");
+            return 1;
           }
 
           /// extract and apply process switches
@@ -1407,7 +1442,6 @@ int runStateMachine(DataProcessorSpecs const& workflow,
           };
           bool altered = false;
           for (auto& device : altered_workflow) {
-            LOGF(DEBUG, "Adjusting device %s", device.name.c_str());
             // ignore internal devices
             if (device.name.find("internal") != std::string::npos) {
               continue;
@@ -1433,6 +1467,8 @@ int runStateMachine(DataProcessorSpecs const& workflow,
               continue;
             }
 
+            LOGP(debug, "Adjusting device {}", device.name.c_str());
+
             auto configStore = DeviceConfigurationHelpers::getConfiguration(serviceRegistry, device.name.c_str(), device.options);
             if (configStore != nullptr) {
               auto reg = std::make_unique<ConfigParamRegistry>(std::move(configStore));
@@ -1448,26 +1484,39 @@ int runStateMachine(DataProcessorSpecs const& workflow,
               }
             }
             /// FIXME: use commandline arguments as alternative
-            LOGF(DEBUG, "Original inputs: ");
+            LOGP(debug, "Original inputs: ");
             for (auto& input : device.inputs) {
-              LOGF(DEBUG, "-> %s", input.binding);
+              LOGP(debug, "-> {}", input.binding);
             }
             auto end = device.inputs.end();
             auto new_end = std::remove_if(device.inputs.begin(), device.inputs.end(), [](InputSpec& input) {
-              return !std::any_of(input.metadata.begin(), input.metadata.end(), [](ConfigParamSpec& param) {
-                if (param.type == VariantType::Bool && param.name.find("control:") != std::string::npos) {
-                  return param.defaultValue.get<bool>() == true;
+              auto requested = false;
+              auto hasControls = false;
+              for (auto& param : input.metadata) {
+                if (param.type != VariantType::Bool) {
+                  continue;
                 }
-                return true;
-              });
+                if (param.name.find("control:") != std::string::npos) {
+                  hasControls = true;
+                  if (param.defaultValue.get<bool>() == true) {
+                    requested = true;
+                    break;
+                  }
+                }
+              }
+              if (hasControls) {
+                return !requested;
+              }
+              return false;
             });
             device.inputs.erase(new_end, end);
-            LOGF(DEBUG, "Adjusted inputs: ");
+            LOGP(debug, "Adjusted inputs: ");
             for (auto& input : device.inputs) {
-              LOGF(DEBUG, "-> %s", input.binding);
+              LOGP(debug, "-> {}", input.binding);
             }
             altered = true;
           }
+          WorkflowHelpers::adjustTopology(altered_workflow, *driverInfo.configContext);
           if (altered) {
             WorkflowSpecNode node{altered_workflow};
             for (auto& service : driverServices) {
@@ -1527,17 +1576,17 @@ int runStateMachine(DataProcessorSpecs const& workflow,
 
           // This should expand nodes so that we can build a consistent DAG.
         } catch (std::runtime_error& e) {
-          LOGP(ERROR, "invalid workflow in {}: {}", driverInfo.argv[0], e.what());
+          LOGP(error, "invalid workflow in {}: {}", driverInfo.argv[0], e.what());
           return 1;
         } catch (o2::framework::RuntimeErrorRef ref) {
           auto& err = o2::framework::error_from_ref(ref);
 #ifdef DPL_ENABLE_BACKTRACE
-          backtrace_symbols_fd(err.backtrace, err.maxBacktrace, STDERR_FILENO);
+          demangled_backtrace_symbols(err.backtrace, err.maxBacktrace, STDERR_FILENO);
 #endif
-          LOGP(ERROR, "invalid workflow in {}: {}", driverInfo.argv[0], err.what);
+          LOGP(error, "invalid workflow in {}: {}", driverInfo.argv[0], err.what);
           return 1;
         } catch (...) {
-          LOGP(ERROR, "invalid workflow in {}: Unknown error while materialising workflow", driverInfo.argv[0]);
+          LOGP(error, "invalid workflow in {}: Unknown error while materialising workflow", driverInfo.argv[0]);
           return 1;
         }
         break;
@@ -1626,10 +1675,10 @@ int runStateMachine(DataProcessorSpecs const& workflow,
                                               driverInfo.uniqueWorkflowId);
         } catch (o2::framework::RuntimeErrorRef& ref) {
           auto& err = o2::framework::error_from_ref(ref);
-          LOGP(ERROR, "unable to merge configurations in {}: {}", driverInfo.argv[0], err.what);
+          LOGP(error, "unable to merge configurations in {}: {}", driverInfo.argv[0], err.what);
 #ifdef DPL_ENABLE_BACKTRACE
           std::cerr << "\nStacktrace follows:\n\n";
-          backtrace_symbols_fd(err.backtrace, err.maxBacktrace, STDERR_FILENO);
+          demangled_backtrace_symbols(err.backtrace, err.maxBacktrace, STDERR_FILENO);
 #endif
           return 1;
         }
@@ -1639,7 +1688,7 @@ int runStateMachine(DataProcessorSpecs const& workflow,
         //        all the devices and we restart them. This is also what DDS does at
         //        a larger scale. In principle one could try to do a delta and only
         //        restart the data processors which need to be restarted.
-        LOG(INFO) << "Redeployment of configuration asked.";
+        LOG(info) << "Redeployment of configuration asked.";
         std::ostringstream forwardedStdin;
         WorkflowSerializationHelpers::dump(forwardedStdin, workflow, dataProcessorInfos, commandInfo);
         infos.reserve(runningWorkflow.devices.size());
@@ -1660,8 +1709,10 @@ int runStateMachine(DataProcessorSpecs const& workflow,
           callback(serviceRegistry, varmap);
         }
         childFds.resize(runningWorkflow.devices.size());
-        prepareStdio(childFds);
         for (int di = 0; di < runningWorkflow.devices.size(); ++di) {
+          auto& context = childFds[di];
+          createPipes(context.childstdin);
+          createPipes(context.childstdout);
           if (runningWorkflow.devices[di].resource.hostname != driverInfo.deployHostname) {
             spawnRemoteDevice(forwardedStdin.str(),
                               runningWorkflow.devices[di], controls[di], deviceExecutions[di], infos);
@@ -1689,7 +1740,7 @@ int runStateMachine(DataProcessorSpecs const& workflow,
                          driverInfo.resourcesMonitoringDumpInterval * 1000,
                          driverInfo.resourcesMonitoringDumpInterval * 1000);
         }
-        LOG(INFO) << "Redeployment of configuration done.";
+        LOG(info) << "Redeployment of configuration done.";
       } break;
       case DriverState::RUNNING:
         // Run any pending libUV event loop, block if
@@ -1706,7 +1757,7 @@ int runStateMachine(DataProcessorSpecs const& workflow,
           // interaction with the GUI or (if --completion-policy=quit)
           // it could mean that the workflow does not have anything else to do.
           // Let's update the GUI one more time and then EXIT.
-          LOG(INFO) << "Quitting";
+          LOG(info) << "Quitting";
           driverInfo.states.push_back(DriverState::QUIT_REQUESTED);
         } else if (infos.size() != runningWorkflow.devices.size()) {
           // If the number of devices is different from
@@ -1718,7 +1769,7 @@ int runStateMachine(DataProcessorSpecs const& workflow,
           driverInfo.states.push_back(DriverState::SCHEDULE);
           driverInfo.states.push_back(DriverState::MERGE_CONFIGS);
         } else if (runningWorkflow.devices.empty() && driverInfo.batch == true) {
-          LOG(INFO) << "No device resulting from the workflow. Quitting.";
+          LOG(info) << "No device resulting from the workflow. Quitting.";
           // If there are no deviceSpecs, we exit.
           driverInfo.states.push_back(DriverState::EXIT);
         } else if (runningWorkflow.devices.empty() && driverInfo.batch == false && !guiDeployedOnce) {
@@ -1748,7 +1799,7 @@ int runStateMachine(DataProcessorSpecs const& workflow,
         }
         break;
       case DriverState::QUIT_REQUESTED:
-        LOG(INFO) << "QUIT_REQUESTED";
+        LOG(info) << "QUIT_REQUESTED";
         guiQuitRequested = true;
         // We send SIGCONT to make sure stopped children are resumed
         killChildren(infos, SIGCONT);
@@ -1771,7 +1822,7 @@ int runStateMachine(DataProcessorSpecs const& workflow,
         if (forceful_exit == true) {
           static bool forcefulExitMessage = true;
           if (forcefulExitMessage) {
-            LOG(INFO) << "Forceful exit requested.";
+            LOG(info) << "Forceful exit requested.";
             forcefulExitMessage = false;
           }
           killChildren(infos, SIGCONT);
@@ -1787,18 +1838,25 @@ int runStateMachine(DataProcessorSpecs const& workflow,
           }
         }
         hasError = processSigChild(infos);
-        if (areAllChildrenGone(infos) == true &&
-            (guiQuitRequested || (checkIfCanExit(infos) == true) || graceful_exit)) {
+        bool allChildrenGone = areAllChildrenGone(infos);
+        bool canExit = checkIfCanExit(infos);
+        bool supposedToQuit = (guiQuitRequested || canExit || graceful_exit);
+
+        if (allChildrenGone && (supposedToQuit || driverInfo.processingPolicies.termination == TerminationPolicy::QUIT)) {
           // We move to the exit, regardless of where we were
           driverInfo.states.resize(0);
           driverInfo.states.push_back(DriverState::EXIT);
-        } else if (areAllChildrenGone(infos) == false &&
-                   (guiQuitRequested || checkIfCanExit(infos) == true || graceful_exit)) {
-          driverInfo.states.push_back(DriverState::HANDLE_CHILDREN);
-        } else if (hasError && driverInfo.processingPolicies.error == TerminationPolicy::QUIT &&
-                   !(guiQuitRequested || checkIfCanExit(infos) == true || graceful_exit)) {
+        } else if (hasError && driverInfo.processingPolicies.error == TerminationPolicy::QUIT && !supposedToQuit) {
           graceful_exit = 1;
+          force_exit_timer.data = &infos;
+          static bool forceful_timer_started = false;
+          if (forceful_timer_started == false) {
+            forceful_timer_started = true;
+            uv_timer_start(&force_exit_timer, force_exit_callback, 15000, 3000);
+          }
           driverInfo.states.push_back(DriverState::QUIT_REQUESTED);
+        } else if (allChildrenGone == false && supposedToQuit) {
+          driverInfo.states.push_back(DriverState::HANDLE_CHILDREN);
         } else {
         }
       } break;
@@ -1807,7 +1865,7 @@ int runStateMachine(DataProcessorSpecs const& workflow,
           if (driverInfo.resourcesMonitoringDumpInterval) {
             uv_timer_stop(&metricDumpTimer);
           }
-          LOG(INFO) << "Dumping performance metrics to performanceMetrics.json file";
+          LOG(info) << "Dumping performance metrics to performanceMetrics.json file";
           dumpMetricsCallback(&metricDumpTimer);
         }
         // This is a clean exit. Before we do so, if required,
@@ -1826,7 +1884,7 @@ int runStateMachine(DataProcessorSpecs const& workflow,
           auto spec = runningWorkflow.devices[di];
           finalConfig.put_child(spec.name, info.currentConfig);
         }
-        LOG(INFO) << "Dumping used configuration in dpl-config.json";
+        LOG(info) << "Dumping used configuration in dpl-config.json";
 
         std::ofstream outDPLConfigFile("dpl-config.json", std::ios::out);
         if (outDPLConfigFile.is_open()) {
@@ -1848,7 +1906,7 @@ int runStateMachine(DataProcessorSpecs const& workflow,
         driverControl.callbacks.clear();
         break;
       default:
-        LOG(ERROR) << "Driver transitioned in an unknown state("
+        LOG(error) << "Driver transitioned in an unknown state("
                    << "current: " << (int)current
                    << ", previous: " << (int)previous
                    << "). Shutting down.";
@@ -2500,7 +2558,7 @@ int doMain(int argc, char** argv, o2::framework::WorkflowSpec const& workflow,
         .run(),
       varmap);
   } catch (std::exception const& e) {
-    LOGP(ERROR, "error parsing options of {}: {}", argv[0], e.what());
+    LOGP(error, "error parsing options of {}: {}", argv[0], e.what());
     exit(1);
   }
   conflicting_options(varmap, "dds", "o2-control");
@@ -2585,7 +2643,7 @@ int doMain(int argc, char** argv, o2::framework::WorkflowSpec const& workflow,
 
 void doBoostException(boost::exception& e, char const* processName)
 {
-  LOGP(ERROR, "error while setting up workflow in {}: {}",
+  LOGP(error, "error while setting up workflow in {}: {}",
        processName, boost::current_exception_diagnostic_information(true));
 }
 #pragma GCC diagnostic push

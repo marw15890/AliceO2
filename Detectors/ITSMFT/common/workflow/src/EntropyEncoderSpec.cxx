@@ -39,7 +39,7 @@ void EntropyEncoderSpec::init(o2::framework::InitContext& ic)
   std::string dictPath = ic.options().get<std::string>("ctf-dict");
   mCTFCoder.setMemMarginFactor(ic.options().get<float>("mem-factor"));
   if (!dictPath.empty() && dictPath != "none") {
-    mCTFCoder.createCoders(dictPath, o2::ctf::CTFCoderBase::OpType::Encoder);
+    mCTFCoder.createCodersFromFile<CTF>(dictPath, o2::ctf::CTFCoderBase::OpType::Encoder);
   }
 }
 
@@ -58,12 +58,12 @@ void EntropyEncoderSpec::run(ProcessingContext& pc)
   buffer.resize(eeb->size());         // shrink buffer to strictly necessary size
   //  eeb->print();
   mTimer.Stop();
-  LOG(INFO) << "Created encoded data of size " << eeb->size() << " for " << mOrigin.as<std::string>() << " in " << mTimer.CpuTime() - cput << " s";
+  LOG(info) << "Created encoded data of size " << eeb->size() << " for " << mOrigin.as<std::string>() << " in " << mTimer.CpuTime() - cput << " s";
 }
 
 void EntropyEncoderSpec::endOfStream(EndOfStreamContext& ec)
 {
-  LOGF(INFO, "%s Entropy Encoding total timing: Cpu: %.3e Real: %.3e s in %d slots",
+  LOGF(info, "%s Entropy Encoding total timing: Cpu: %.3e Real: %.3e s in %d slots",
        mOrigin.as<std::string>(), mTimer.CpuTime(), mTimer.RealTime(), mTimer.Counter() - 1);
 }
 

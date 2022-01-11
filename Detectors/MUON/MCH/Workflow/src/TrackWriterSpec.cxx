@@ -16,7 +16,8 @@
 #include "DataFormatsMCH/ROFRecord.h"
 #include "DataFormatsMCH/TrackMCH.h"
 #include "Framework/Logger.h"
-#include "DataFormatsMCH/ClusterBlock.h"
+#include "DataFormatsMCH/Cluster.h"
+#include "DataFormatsMCH/Digit.h"
 #include <vector>
 
 using namespace o2::framework;
@@ -27,14 +28,15 @@ namespace o2::mch
 template <typename T>
 using BranchDefinition = MakeRootTreeWriterSpec::BranchDefinition<T>;
 
-DataProcessorSpec getTrackWriterSpec(bool useMC, const char* specName, const char* fileName)
+DataProcessorSpec getTrackWriterSpec(bool useMC, const char* specName, const char* fileName, bool digits)
 {
   return MakeRootTreeWriterSpec(specName,
                                 fileName,
                                 MakeRootTreeWriterSpec::TreeAttributes{"o2sim", "Tree MCH Standalone Tracks"},
                                 BranchDefinition<std::vector<TrackMCH>>{InputSpec{"tracks", "MCH", "TRACKS"}, "tracks"},
                                 BranchDefinition<std::vector<ROFRecord>>{InputSpec{"trackrofs", "MCH", "TRACKROFS"}, "trackrofs"},
-                                BranchDefinition<std::vector<ClusterStruct>>{InputSpec{"trackclusters", "MCH", "TRACKCLUSTERS"}, "trackclusters"},
+                                BranchDefinition<std::vector<Cluster>>{InputSpec{"trackclusters", "MCH", "TRACKCLUSTERS"}, "trackclusters"},
+                                BranchDefinition<std::vector<Digit>>{InputSpec{"trackdigits", "MCH", "TRACKDIGITS"}, "trackdigits", digits ? 1 : 0},
                                 BranchDefinition<std::vector<o2::MCCompLabel>>{InputSpec{"tracklabels", "MCH", "TRACKLABELS"}, "tracklabels", useMC ? 1 : 0})();
 }
 

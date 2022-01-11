@@ -47,7 +47,6 @@ struct Triggers {
   int32_t amplC = -5000;      // sum amplitude C side
   int16_t timeA = -5000;      // average time A side
   int16_t timeC = -5000;      // average time C side
-  uint8_t eventFlags = 0;     // event conditions
   Triggers() = default;
   Triggers(uint8_t signals, int8_t chanA, int8_t chanC, int32_t aamplA, int32_t aamplC, int16_t atimeA, int16_t atimeC)
   {
@@ -90,15 +89,15 @@ struct Triggers {
            std::tie(other.triggersignals, other.nChanA, other.nChanC, other.amplA, other.amplC, other.timeA, other.timeC);
   }
   void printLog() const;
-  ClassDefNV(Triggers, 2);
+  ClassDefNV(Triggers, 3);
 };
 
 struct DetTrigInput {
   static constexpr char sChannelNameDPL[] = "TRIGGERINPUT";
   static constexpr char sDigitName[] = "DetTrigInput";
   static constexpr char sDigitBranchName[] = "FT0TRIGGERINPUT";
-  o2::InteractionRecord mIntRecord; // bc/orbit of the intpur
-  std::bitset<5> mInputs;           // pattern of inputs.
+  o2::InteractionRecord mIntRecord{}; // bc/orbit of the intpur
+  std::bitset<5> mInputs{};           // pattern of inputs.
   DetTrigInput() = default;
   DetTrigInput(const o2::InteractionRecord& iRec, Bool_t isA, Bool_t isC, Bool_t isVrtx, Bool_t isCnt, Bool_t isSCnt)
     : mIntRecord(iRec),
@@ -116,11 +115,11 @@ struct Digit {
   static constexpr char sChannelNameDPL[] = "DIGITSBC";
   static constexpr char sDigitName[] = "Digit";
   static constexpr char sDigitBranchName[] = "FT0DIGITSBC";
-  o2::dataformats::RangeReference<int, int> ref;
-  Triggers mTriggers;               // pattern of triggers  in this BC
-  uint8_t mEventStatus;             //Status of event from FT0, such as Pileup , etc
-  o2::InteractionRecord mIntRecord; // Interaction record (orbit, bc)
-  int mEventID;
+  o2::dataformats::RangeReference<int, int> ref{};
+  Triggers mTriggers{};               // pattern of triggers  in this BC
+  uint8_t mEventStatus = 0;           //Status of event from FT0, such as Pileup , etc
+  o2::InteractionRecord mIntRecord{}; // Interaction record (orbit, bc)
+  int mEventID = 0;
   enum EEventStatus {
     kPileup
   };
@@ -167,9 +166,9 @@ struct TriggersExt {
   static constexpr char sDigitBranchName[] = "FT0DIGITSTRGEXT";
   TriggersExt(std::array<uint32_t, 20> triggerWords) : mTriggerWords(triggerWords) {}
   TriggersExt() = default;
-  o2::InteractionRecord mIntRecord;
+  o2::InteractionRecord mIntRecord{};
   void setTrgWord(uint32_t trgWord, std::size_t pos) { mTriggerWords[pos] = trgWord; }
-  std::array<uint32_t, 20> mTriggerWords;
+  std::array<uint32_t, 20> mTriggerWords{};
   void printLog() const;
   ClassDefNV(TriggersExt, 2);
 };

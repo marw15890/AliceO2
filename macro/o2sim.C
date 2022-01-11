@@ -28,7 +28,7 @@
 #include <Steer/O2RunSim.h>
 #include <DetectorsBase/MaterialManager.h>
 #include <CCDB/BasicCCDBManager.h>
-#include <DetectorsCommonDataFormats/NameConf.h>
+#include <CommonUtils/NameConf.h>
 #include "DetectorsBase/Aligner.h"
 #include <unistd.h>
 #include <sstream>
@@ -41,17 +41,14 @@ FairRunSim* o2sim_init(bool asservice)
   // initialize CCDB service
   auto& ccdbmgr = o2::ccdb::BasicCCDBManager::instance();
   ccdbmgr.setURL(confref.getConfigData().mCCDBUrl);
-  ccdbmgr.setTimestamp(confref.getConfigData().mTimestamp);
+  ccdbmgr.setTimestamp(confref.getTimestamp());
   // try to verify connection
   if (!ccdbmgr.isHostReachable()) {
-    LOG(ERROR) << "Could not setup CCDB connecting";
+    LOG(error) << "Could not setup CCDB connecting";
   } else {
-    LOG(INFO) << "Initialized CCDB Manager at URL: " << ccdbmgr.getURL();
-    LOG(INFO) << "Initialized CCDB Manager with timestamp : " << ccdbmgr.getTimestamp();
+    LOG(info) << "Initialized CCDB Manager at URL: " << ccdbmgr.getURL();
+    LOG(info) << "Initialized CCDB Manager with timestamp : " << ccdbmgr.getTimestamp();
   }
-
-  // we can read from CCDB (for the moment faking with a TFile)
-  // o2::conf::ConfigurableParam::fromCCDB("params_ccdb.root", runid);
 
   // update the parameters from an INI/JSON file, if given (overrides code-based version)
   o2::conf::ConfigurableParam::updateFromFile(confref.getConfigFile());
@@ -62,18 +59,15 @@ FairRunSim* o2sim_init(bool asservice)
   // write the final configuration file
   o2::conf::ConfigurableParam::writeINI(o2::base::NameConf::getMCConfigFileName(confref.getOutPrefix()));
 
-  // we can update the binary CCDB entry something like this ( + timestamp key )
-  // o2::conf::ConfigurableParam::toCCDB("params_ccdb.root");
-
   // set seed
   auto seed = o2::utils::RngHelper::setGRandomSeed(confref.getStartSeed());
-  LOG(INFO) << "RNG INITIAL SEED " << seed;
+  LOG(info) << "RNG INITIAL SEED " << seed;
 
   auto genconfig = confref.getGenerator();
   FairRunSim* run = new o2::steer::O2RunSim(asservice);
   run->SetImportTGeoToVMC(false); // do not import TGeo to VMC since the latter is built together with TGeo
   run->SetSimSetup([confref]() { o2::SimSetup::setup(confref.getMCEngine().c_str()); });
-  run->SetRunId(confref.getConfigData().mTimestamp);
+  run->SetRunId(confref.getTimestamp());
 
   auto pid = getpid();
   std::stringstream s;
@@ -93,6 +87,9 @@ FairRunSim* o2sim_init(bool asservice)
   run->SetMCEventHeader(header);
 
   // construct geometry / including magnetic field
+  auto flg = TGeoManager::LockDefaultUnits(false);
+  TGeoManager::SetDefaultUnits(TGeoManager::kRootUnits);
+  TGeoManager::LockDefaultUnits(flg);
   build_geometry(run);
 
   // setup generator
@@ -133,8 +130,6 @@ FairRunSim* o2sim_init(bool asservice)
   // run init
   run->Init();
 
-  std::time_t runStart = std::time(nullptr);
-
   // runtime database
   bool kParameterMerged = true;
   auto rtdb = run->GetRuntimeDb();
@@ -156,9 +151,10 @@ FairRunSim* o2sim_init(bool asservice)
   {
     // store GRPobject
     o2::parameters::GRPObject grp;
-    grp.setRun(run->GetRunId());
+    grp.setRun(run->GetRunId());                // do we want to fill data taking run id?
+    uint64_t runStart = confref.getTimestamp(); // this will signify "time of this MC" (might not coincide with start of Run)
     grp.setTimeStart(runStart);
-    grp.setTimeEnd(std::time(nullptr));
+    grp.setTimeEnd(runStart + 3600000);
     grp.setDetsReadOut(detMask);
     // CTP is not a physical detector, just flag in the GRP if requested
     if (isActivated("CTP")) {
@@ -178,7 +174,7 @@ FairRunSim* o2sim_init(bool asservice)
     // save
     std::string grpfilename = o2::base::NameConf::getGRPFileName(confref.getOutPrefix());
     TFile grpF(grpfilename.c_str(), "recreate");
-    grpF.WriteObjectAny(&grp, grp.Class(), "GRP");
+    grpF.WriteObjectAny(&grp, grp.Class(), o2::base::NameConf::CCDBOBJECT.data());
   }
 
   // todo: save beam information in the grp
@@ -194,8 +190,8 @@ FairRunSim* o2sim_init(bool asservice)
 
   // extract max memory usage for init
   FairSystemInfo sysinfo;
-  LOG(INFO) << "Init: Real time " << rtime << " s, CPU time " << ctime << "s";
-  LOG(INFO) << "Init: Memory used " << sysinfo.GetMaxMemory() << " MB";
+  LOG(info) << "Init: Real time " << rtime << " s, CPU time " << ctime << "s";
+  LOG(info) << "Init: Memory used " << sysinfo.GetMaxMemory() << " MB";
 
   return run;
 }
@@ -221,15 +217,15 @@ void o2sim_run(FairRunSim* run, bool asservice)
   // extract max memory usage
   FairSystemInfo sysinfo;
 
-  LOG(INFO) << "Macro finished succesfully.";
-  LOG(INFO) << "Real time " << rtime << " s, CPU time " << ctime << "s";
-  LOG(INFO) << "Memory used " << sysinfo.GetMaxMemory() << " MB";
+  LOG(info) << "Macro finished succesfully.";
+  LOG(info) << "Real time " << rtime << " s, CPU time " << ctime << "s";
+  LOG(info) << "Memory used " << sysinfo.GetMaxMemory() << " MB";
 
   // migrate to file format where hits sit in separate files
   // (Note: The parallel version is doing this intrinsically;
   //  The serial version uses FairRootManager IO which handles a common file IO for all outputs)
   if (!asservice) {
-    LOG(INFO) << "Migrating simulation output to separate hit file format";
+    LOG(info) << "Migrating simulation output to separate hit file format";
     migrateSimFiles(confref.getOutPrefix().c_str());
   }
 }

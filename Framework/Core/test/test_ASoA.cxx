@@ -35,7 +35,7 @@ DECLARE_SOA_COLUMN_FULL(X, x, int32_t, "x");
 DECLARE_SOA_COLUMN_FULL(Y, y, int32_t, "y");
 DECLARE_SOA_COLUMN_FULL(Z, z, int32_t, "z");
 DECLARE_SOA_DYNAMIC_COLUMN(Sum, sum, [](int32_t x, int32_t y) { return x + y; });
-DECLARE_SOA_EXPRESSION_COLUMN(ESum, esum, int32_t, 1 * test::x + test::y);
+DECLARE_SOA_EXPRESSION_COLUMN(ESum, esum, int32_t, test ::x + test::y);
 } // namespace test
 
 DECLARE_SOA_TABLE(Points, "TST", "POINTS", test::X, test::Y);
@@ -333,8 +333,8 @@ BOOST_AUTO_TEST_CASE(TestConcatTables)
   using FilteredTest = Filtered<TestA>;
   using namespace o2::framework;
   expressions::Filter testf = (test::x == 1) || (test::x == 3);
-  expressions::Selection selection;
-  auto status = gandiva::SelectionVector::MakeInt32(tests.size(), arrow::default_memory_pool(), &selection);
+  gandiva::Selection selection;
+  auto status = gandiva::SelectionVector::MakeInt64(tests.size(), arrow::default_memory_pool(), &selection);
   BOOST_REQUIRE(status.ok());
 
   auto fptr = tableA->schema()->GetFieldByName("x");
@@ -363,7 +363,7 @@ BOOST_AUTO_TEST_CASE(TestConcatTables)
   auto st = filter->Evaluate(*batch, selection);
   BOOST_REQUIRE_EQUAL(st.ToString(), "OK");
 
-  expressions::Selection selection_f = expressions::createSelection(tableA, testf);
+  gandiva::Selection selection_f = expressions::createSelection(tableA, testf);
 
   TestA testA{tableA};
   FilteredTest filtered{{testA.asArrowTable()}, selection_f};
@@ -381,8 +381,8 @@ BOOST_AUTO_TEST_CASE(TestConcatTables)
   // Hardcode a selection for the first 5 odd numbers
   using FilteredConcatTest = Filtered<ConcatTest::table_t>;
   using namespace o2::framework;
-  expressions::Selection selectionConcat;
-  status = gandiva::SelectionVector::MakeInt32(tests.size(), arrow::default_memory_pool(), &selectionConcat);
+  gandiva::Selection selectionConcat;
+  status = gandiva::SelectionVector::MakeInt64(tests.size(), arrow::default_memory_pool(), &selectionConcat);
   BOOST_CHECK_EQUAL(status.ok(), true);
   selectionConcat->SetIndex(0, 0);
   selectionConcat->SetIndex(1, 5);
@@ -411,8 +411,8 @@ BOOST_AUTO_TEST_CASE(TestConcatTables)
 
   // Test with a Joined table
   using FilteredJoinTest = Filtered<JoinedTest::table_t>;
-  expressions::Selection selectionJoin;
-  status = gandiva::SelectionVector::MakeInt32(tests.size(), arrow::default_memory_pool(), &selectionJoin);
+  gandiva::Selection selectionJoin;
+  status = gandiva::SelectionVector::MakeInt64(tests.size(), arrow::default_memory_pool(), &selectionJoin);
   BOOST_CHECK_EQUAL(status.ok(), true);
   selectionJoin->SetIndex(0, 0);
   selectionJoin->SetIndex(1, 2);
@@ -536,11 +536,13 @@ BOOST_AUTO_TEST_CASE(TestFilteredOperators)
   expressions::Filter f2 = test::y > 13;
 
   TestA testA{tableA};
-  FilteredTest filtered1{{testA.asArrowTable()}, expressions::createSelection(testA.asArrowTable(), f1)};
+  auto s1 = expressions::createSelection(testA.asArrowTable(), f1);
+  FilteredTest filtered1{{testA.asArrowTable()}, s1};
   BOOST_CHECK_EQUAL(4, filtered1.size());
   BOOST_CHECK(filtered1.begin() != filtered1.end());
 
-  FilteredTest filtered2{{testA.asArrowTable()}, expressions::createSelection(testA.asArrowTable(), f2)};
+  auto s2 = expressions::createSelection(testA.asArrowTable(), f2);
+  FilteredTest filtered2{{testA.asArrowTable()}, s2};
   BOOST_CHECK_EQUAL(2, filtered2.size());
   BOOST_CHECK(filtered2.begin() != filtered2.end());
 
@@ -568,7 +570,8 @@ BOOST_AUTO_TEST_CASE(TestFilteredOperators)
   BOOST_CHECK_EQUAL(i, 0);
 
   expressions::Filter f3 = test::x < 3;
-  FilteredTest filtered3{{testA.asArrowTable()}, expressions::createSelection(testA.asArrowTable(), f3)};
+  auto s3 = expressions::createSelection(testA.asArrowTable(), f3);
+  FilteredTest filtered3{{testA.asArrowTable()}, s3};
   BOOST_CHECK_EQUAL(3, filtered3.size());
   BOOST_CHECK(filtered3.begin() != filtered3.end());
 
@@ -611,11 +614,13 @@ BOOST_AUTO_TEST_CASE(TestNestedFiltering)
   expressions::Filter f3 = test::x < 3;
 
   TestA testA{tableA};
-  FilteredTest filtered{{testA.asArrowTable()}, expressions::createSelection(testA.asArrowTable(), f1)};
+  auto s1 = expressions::createSelection(testA.asArrowTable(), f1);
+  FilteredTest filtered{{testA.asArrowTable()}, s1};
   BOOST_CHECK_EQUAL(4, filtered.size());
   BOOST_CHECK(filtered.begin() != filtered.end());
 
-  NestedFilteredTest nestedFiltered{{filtered}, expressions::createSelection(filtered.asArrowTable(), f2)};
+  auto s2 = expressions::createSelection(filtered.asArrowTable(), f2);
+  NestedFilteredTest nestedFiltered{{filtered}, s2};
   BOOST_CHECK_EQUAL(2, nestedFiltered.size());
   auto i = 0;
   for (auto& f : nestedFiltered) {
@@ -626,7 +631,8 @@ BOOST_AUTO_TEST_CASE(TestNestedFiltering)
   }
   BOOST_CHECK_EQUAL(i, 2);
 
-  TripleNestedFilteredTest tripleFiltered{{nestedFiltered}, expressions::createSelection(nestedFiltered.asArrowTable(), f3)};
+  auto s3 = expressions::createSelection(nestedFiltered.asArrowTable(), f3);
+  TripleNestedFilteredTest tripleFiltered{{nestedFiltered}, s3};
   BOOST_CHECK_EQUAL(1, tripleFiltered.size());
   i = 0;
   for (auto& f : tripleFiltered) {
@@ -697,7 +703,7 @@ BOOST_AUTO_TEST_CASE(TestIndexToFiltered)
 
 namespace test
 {
-DECLARE_SOA_ARRAY_INDEX_COLUMN(Points3D, pointGroup, 3);
+DECLARE_SOA_ARRAY_INDEX_COLUMN(Points3D, pointGroup);
 DECLARE_SOA_SLICE_INDEX_COLUMN(Points3D, pointSlice);
 DECLARE_SOA_SELF_INDEX_COLUMN(OtherPoint, otherPoint);
 } // namespace test
@@ -710,18 +716,18 @@ BOOST_AUTO_TEST_CASE(TestAdvancedIndices)
   TableBuilder b1;
   auto pwriter = b1.cursor<Points3Ds>();
   for (auto i = 0; i < 20; ++i) {
-    pwriter(0, -1 * i, 0.5 * i, 2 * i);
+    pwriter(0, -1 * i, (int)(i / 2), 2 * i);
   }
   auto t1 = b1.finalize();
 
   TableBuilder b2;
   auto prwriter = b2.cursor<PointsRef>();
   auto a = std::array{0, 1};
-  auto aa = std::array{2, 3, 4};
-  prwriter(0, &a[0], &aa[0]);
+  auto aa = std::vector{2, 3, 4};
+  prwriter(0, &a[0], aa);
   a = {4, 10};
   aa = {12, 2, 19};
-  prwriter(0, &a[0], &aa[0]);
+  prwriter(0, &a[0], aa);
   auto t2 = b2.finalize();
 
   auto pt = Points3Ds{t1};

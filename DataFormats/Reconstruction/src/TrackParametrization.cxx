@@ -182,7 +182,7 @@ GPUd() bool TrackParametrization<value_T>::rotateParam(value_t alpha)
   // RS: check if rotation does no invalidate track model (cos(local_phi)>=0, i.e. particle
   // direction in local frame is along the X axis
   if ((csp * ca + snp * sa) < 0) {
-    //LOGF(WARNING,"Rotation failed: local cos(phi) would become {:.2f}", csp * ca + snp * sa);
+    //LOGF(warning,"Rotation failed: local cos(phi) would become {:.2f}", csp * ca + snp * sa);
     return false;
   }
   //
@@ -220,6 +220,10 @@ GPUd() bool TrackParametrization<value_T>::propagateParamTo(value_t xk, const di
     return false;
   }
   value_t crv = getCurvature(b[2]);
+  if (crv == 0.) {
+    return propagateParamTo(xk, 0.); // for the straight-line propagation use 1D field method
+  }
+
   value_t x2r = crv * dx;
   value_t f1 = getSnp(), f2 = f1 + x2r;
   if (math_utils::detail::abs<value_T>(f1) > constants::math::Almost1 || math_utils::detail::abs<value_T>(f2) > constants::math::Almost1) {

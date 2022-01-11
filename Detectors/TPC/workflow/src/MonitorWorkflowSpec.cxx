@@ -152,7 +152,7 @@ class TPCMonitorDevice : public o2::framework::Task
     for (auto const& inputRef : InputRecordWalker(inputs)) {
       auto const* sectorHeader = DataRefUtils::getHeader<o2::tpc::TPCSectorHeader*>(inputRef);
       if (sectorHeader == nullptr) {
-        LOG(ERROR) << "sector header missing on header stack for input on " << inputRef.spec->binding;
+        LOG(error) << "sector header missing on header stack for input on " << inputRef.spec->binding;
         continue;
       }
       const int sector = sectorHeader->sector();
@@ -161,12 +161,9 @@ class TPCMonitorDevice : public o2::framework::Task
   }
 };
 
-DataProcessorSpec getMonitorWorkflowSpec(bool useDigitsAsInput, std::string inputSpec)
+DataProcessorSpec getMonitorWorkflowSpec(std::string inputSpec)
 {
-  if (useDigitsAsInput) {
-    inputSpec = "tpcdigits:TPC/DIGITS";
-  }
-
+  const bool useDigitsAsInput = inputSpec.find("DIGITS") != std::string::npos;
   std::vector<OutputSpec> outputs;
 
   return DataProcessorSpec{

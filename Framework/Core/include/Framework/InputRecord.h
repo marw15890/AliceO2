@@ -234,9 +234,7 @@ class InputRecord
       // the buffer to be deleted when it goes out of scope. The string is built
       // from the data and its lengh, null-termination is not necessary.
       // return std::string object
-      auto header = DataRefUtils::getHeader<header::DataHeader*>(ref);
-      assert(header);
-      return std::string(ref.payload, header->payloadSize);
+      return std::string(ref.payload, DataRefUtils::getPayloadSize(ref));
 
       // implementation (c)
     } else if constexpr (std::is_same<T, char const*>::value) {
@@ -253,22 +251,18 @@ class InputRecord
       // substitution for TableConsumer
       // For the moment this is dummy, as it requires proper support to
       // create the RDataSource from the arrow buffer.
-      auto header = DataRefUtils::getHeader<header::DataHeader*>(ref);
-      assert(header);
       auto data = reinterpret_cast<uint8_t const*>(ref.payload);
-      return std::make_unique<TableConsumer>(data, header->payloadSize);
+      return std::make_unique<TableConsumer>(data, DataRefUtils::getPayloadSize(ref));
 
       // implementation (e)
-    } else if constexpr (framework::is_boost_serializable<T>::value || is_specialization<T, BoostSerialized>::value) {
+    } else if constexpr (framework::is_boost_serializable<T>::value || is_specialization_v<T, BoostSerialized>) {
       // substitution for boost-serialized entities
       // We have to deserialize the ostringstream.
       // FIXME: check that the string is null terminated.
       // @return deserialized copy of payload
-      auto header = DataRefUtils::getHeader<header::DataHeader*>(ref);
-      assert(header);
-      auto str = std::string(ref.payload, header->payloadSize);
-      assert(header->payloadSize == sizeof(T));
-      if constexpr (is_specialization<T, BoostSerialized>::value) {
+      auto str = std::string(ref.payload, DataRefUtils::getPayloadSize(ref));
+      assert(DataRefUtils::getPayloadSize(ref) == sizeof(T));
+      if constexpr (is_specialization_v<T, BoostSerialized>) {
         return o2::utils::BoostDeserialize<typename T::wrapped_type>(str);
       } else {
         return o2::utils::BoostDeserialize<T>(str);
@@ -285,25 +279,27 @@ class InputRecord
         throw runtime_error("Inconsistent serialization method for extracting span");
       }
       using ValueT = typename T::value_type;
-      if (header->payloadSize % sizeof(ValueT)) {
+      auto payloadSize = DataRefUtils::getPayloadSize(ref);
+      if (payloadSize % sizeof(ValueT)) {
         throw runtime_error(("Inconsistent type and payload size at " + std::string(ref.spec->binding) + "(" + DataSpecUtils::describe(*ref.spec) + ")" +
                              ": type size " + std::to_string(sizeof(ValueT)) +
-                             "  payload size " + std::to_string(header->payloadSize))
+                             "  payload size " + std::to_string(payloadSize))
                               .c_str());
       }
-      return gsl::span<ValueT const>(reinterpret_cast<ValueT const*>(ref.payload), header->payloadSize / sizeof(ValueT));
+      return gsl::span<ValueT const>(reinterpret_cast<ValueT const*>(ref.payload), payloadSize / sizeof(ValueT));
 
       // implementation (g)
     } else if constexpr (is_container<T>::value) {
       // currently implemented only for vectors
-      if constexpr (is_specialization<typename std::remove_const<T>::type, std::vector>::value) {
+      if constexpr (is_specialization_v<std::remove_const_t<T>, std::vector>) {
         auto header = DataRefUtils::getHeader<header::DataHeader*>(ref);
+        auto payloadSize = DataRefUtils::getPayloadSize(ref);
         auto method = header->payloadSerializationMethod;
         if (method == o2::header::gSerializationMethodNone) {
           // TODO: construct a vector spectator
           // this is a quick solution now which makes a copy of the plain vector data
           auto* start = reinterpret_cast<typename T::value_type const*>(ref.payload);
-          auto* end = start + header->payloadSize / sizeof(typename T::value_type);
+          auto* end = start + payloadSize / sizeof(typename T::value_type);
           T result(start, end);
           return result;
         } else if (method == o2::header::gSerializationMethodROOT) {
@@ -313,7 +309,7 @@ class InputRecord
           /// container, C++11 and beyond will implicitly apply return value optimization.
           /// @return std container object
           using NonConstT = typename std::remove_const<T>::type;
-          if constexpr (is_specialization<T, ROOTSerialized>::value == true || has_root_dictionary<T>::value == true) {
+          if constexpr (is_specialization_v<T, ROOTSerialized> == true || has_root_dictionary<T>::value == true) {
             // we expect the unique_ptr to hold an object, exception should have been thrown
             // otherwise
             auto object = DataRefUtils::as<NonConstT>(ref);
@@ -358,6 +354,7 @@ class InputRecord
       using ValueT = typename std::remove_pointer<T>::type;
 
       auto header = DataRefUtils::getHeader<header::DataHeader*>(ref);
+      auto payloadSize = DataRefUtils::getPayloadSize(ref);
       auto method = header->payloadSerializationMethod;
       if (method == o2::header::gSerializationMethodNone) {
         if constexpr (is_messageable<ValueT>::value) {
@@ -365,11 +362,11 @@ class InputRecord
           // return type with non-owning Deleter instance
           std::unique_ptr<ValueT const, Deleter<ValueT const>> result(ptr, Deleter<ValueT const>(false));
           return result;
-        } else if constexpr (is_specialization<ValueT, std::vector>::value && has_messageable_value_type<ValueT>::value) {
+        } else if constexpr (is_specialization_v<ValueT, std::vector> && has_messageable_value_type<ValueT>::value) {
           // TODO: construct a vector spectator
           // this is a quick solution now which makes a copy of the plain vector data
           auto* start = reinterpret_cast<typename ValueT::value_type const*>(ref.payload);
-          auto* end = start + header->payloadSize / sizeof(typename ValueT::value_type);
+          auto* end = start + payloadSize / sizeof(typename ValueT::value_type);
           auto container = std::make_unique<ValueT>(start, end);
           std::unique_ptr<ValueT const, Deleter<ValueT const>> result(container.release(), Deleter<ValueT const>(true));
           return result;
@@ -425,9 +422,7 @@ class InputRecord
   T get_boost(char const* binding) const
   {
     DataRef ref = get<DataRef>(binding);
-    auto header = DataRefUtils::getHeader<header::DataHeader*>(ref);
-    assert(header);
-    auto str = std::string(ref.payload, header->payloadSize);
+    auto str = std::string(ref.payload, DataRefUtils::getPayloadSize(ref));
     auto desData = o2::utils::BoostDeserialize<T>(str);
     return std::move(desData);
   }

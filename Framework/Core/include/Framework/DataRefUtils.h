@@ -119,7 +119,7 @@ struct DataRefUtils {
       });
 
       return std::move(result);
-    } else if constexpr (is_specialization<T, ROOTSerialized>::value == true) {
+    } else if constexpr (is_specialization_v<T, ROOTSerialized> == true) {
       // See above. SFINAE allows us to use this to extract a ROOT-serialized object
       // with a somewhat uniform API. ROOT serialization method is enforced by using
       // type wrapper @a ROOTSerialized
@@ -151,7 +151,7 @@ struct DataRefUtils {
         }
       });
       return std::move(result);
-    } else if constexpr (is_specialization<T, CCDBSerialized>::value == true) {
+    } else if constexpr (is_specialization_v<T, CCDBSerialized> == true) {
       using wrapped = typename T::wrapped_type;
       using DataHeader = o2::header::DataHeader;
       std::unique_ptr<wrapped> result(static_cast<wrapped*>(DataRefUtils::decodeCCDB(ref, typeid(wrapped))));
@@ -168,7 +168,14 @@ struct DataRefUtils {
     if (!header) {
       return 0;
     }
-    return header->payloadSize;
+    // in case of an O2 message with multiple payloads, the size of the message stored
+    // in DataRef is returned,
+    // as a prototype solution we are using splitPayloadIndex == splitPayloadParts to
+    // indicate that there are splitPayloadParts payloads following the header
+    if (header->splitPayloadParts > 1 && header->splitPayloadIndex == header->splitPayloadParts) {
+      return ref.payloadSize;
+    }
+    return header->payloadSize < ref.payloadSize || ref.payloadSize == 0 ? header->payloadSize : ref.payloadSize;
   }
 
   template <typename T>

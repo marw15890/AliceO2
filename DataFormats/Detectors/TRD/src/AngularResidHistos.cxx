@@ -19,13 +19,20 @@
 using namespace o2::trd;
 using namespace o2::trd::constants;
 
+void AngularResidHistos::reset()
+{
+  mHistogramEntries.fill(0);
+  mNEntriesPerBin.fill(0);
+  mNEntriesTotal = 0;
+}
+
 bool AngularResidHistos::addEntry(float deltaAlpha, float impactAngle, int chamberId)
 {
   // add entry for given angular residual
   // returns 0 in case of success (impact angle is in valid range)
   int chamberOffset = chamberId * NBINSANGLEDIFF;
   if (std::fabs(impactAngle) >= MAXIMPACTANGLE) {
-    LOG(DEBUG) << "Under-/overflow entry detected for impact angle " << impactAngle;
+    LOG(debug) << "Under-/overflow entry detected for impact angle " << impactAngle;
     return 1;
   } else {
     int iBin = (impactAngle + MAXIMPACTANGLE) * INVBINWIDTH;
@@ -36,15 +43,18 @@ bool AngularResidHistos::addEntry(float deltaAlpha, float impactAngle, int chamb
   return 0;
 }
 
+void AngularResidHistos::fill(const AngularResidHistos& input)
+{
+  for (int i = 0; i < MAXCHAMBER * NBINSANGLEDIFF; ++i) {
+    mHistogramEntries[i] += input.getHistogramEntry(i);
+    mNEntriesPerBin[i] += input.getBinCount(i);
+    mNEntriesTotal += input.getBinCount(i);
+  }
+}
+
 void AngularResidHistos::fill(const gsl::span<const AngularResidHistos> input)
 {
-  for (const auto& data : input) {
-    for (int i = 0; i < MAXCHAMBER * NBINSANGLEDIFF; ++i) {
-      mHistogramEntries[i] += data.getHistogramEntry(i);
-      mNEntriesPerBin[i] += data.getBinCount(i);
-      mNEntriesTotal += data.getBinCount(i);
-    }
-  }
+  LOG(fatal) << "This function must not be called. But it must be available for the compilation to work";
 }
 
 void AngularResidHistos::merge(const AngularResidHistos* prev)
@@ -58,10 +68,10 @@ void AngularResidHistos::merge(const AngularResidHistos* prev)
 
 void AngularResidHistos::print()
 {
-  LOG(INFO) << "There are " << mNEntriesTotal << " entries in the container";
+  LOG(info) << "There are " << mNEntriesTotal << " entries in the container";
   for (int i = 0; i < MAXCHAMBER * NBINSANGLEDIFF; ++i) {
     if (mNEntriesPerBin[i] != 0) {
-      LOGF(INFO, "Global bin %i has %i entries. Average angular residual: %f", i, mNEntriesPerBin[i], mHistogramEntries[i]);
+      LOGF(info, "Global bin %i has %i entries. Average angular residual: %f", i, mNEntriesPerBin[i], mHistogramEntries[i] / mNEntriesPerBin[i]);
     }
   }
 }

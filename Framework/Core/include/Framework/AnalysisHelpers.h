@@ -21,7 +21,6 @@
 #include "Framework/StringHelpers.h"
 #include "Framework/Output.h"
 #include <string>
-
 namespace o2::framework
 {
 class TableConsumer;
@@ -493,40 +492,54 @@ struct Service {
 };
 
 template <typename T>
-o2::soa::Filtered<T>* getTableFromFilter(const T& table, const expressions::Filter& filter)
+auto getTableFromFilter(const T& table, soa::SelectionVector&& selection)
 {
-  auto schema = table.asArrowTable()->schema();
-  expressions::Operations ops = createOperations(filter);
-  gandiva::NodePtr tree = nullptr;
-  if (isSchemaCompatible(schema, ops)) {
-    tree = createExpressionTree(ops, schema);
-  } else {
-    throw std::runtime_error("Partition filter does not match declared table type");
-  }
-
   if constexpr (soa::is_soa_filtered_t<std::decay_t<T>>::value) {
-    return new o2::soa::Filtered<T>{{table}, tree};
+    return std::make_unique<o2::soa::Filtered<T>>(std::vector{table}, std::forward<soa::SelectionVector>(selection));
   } else {
-    return new o2::soa::Filtered<T>{{table.asArrowTable()}, tree};
+    return std::make_unique<o2::soa::Filtered<T>>(std::vector{table.asArrowTable()}, std::forward<soa::SelectionVector>(selection));
   }
 }
 
 template <typename T>
 struct Partition {
-  Partition(expressions::Node&& filter_) : filter{std::move(filter_)}
+  Partition(expressions::Node&& filter_) : filter{std::forward<expressions::Node>(filter_)}
   {
   }
 
-  void bindTable(T& table)
+  Partition(expressions::Node&& filter_, T const& table)
+    : filter{std::forward<expressions::Node>(filter_)}
   {
-    mFiltered.reset(getTableFromFilter(table, filter));
-    bindExternalIndices(&table);
-    getBoundToExternalIndices(table);
+    setTable(table);
   }
 
-  void setTable(const T& table)
+  void intializeCaches(std::shared_ptr<arrow::Schema> const& schema)
   {
-    mFiltered.reset(getTableFromFilter(table, filter));
+    if (tree == nullptr) {
+      expressions::Operations ops = createOperations(filter);
+      if (isSchemaCompatible(schema, ops)) {
+        tree = createExpressionTree(ops, schema);
+      } else {
+        throw std::runtime_error("Partition filter does not match declared table type");
+      }
+    }
+    if (gfilter == nullptr) {
+      gfilter = framework::expressions::createFilter(schema, framework::expressions::makeCondition(tree));
+    }
+  }
+
+  void inline bindTable(T const& table)
+  {
+    setTable(table);
+  }
+
+  void setTable(T const& table)
+  {
+    intializeCaches(table.asArrowTable()->schema());
+    if (dataframeChanged) {
+      mFiltered = getTableFromFilter(table, soa::selectionToVector(framework::expressions::createSelection(table.asArrowTable(), gfilter)));
+      dataframeChanged = false;
+    }
   }
 
   template <typename... Ts>
@@ -552,21 +565,21 @@ struct Partition {
     }
   }
 
-  template <typename T2>
-  void getBoundToExternalIndices(T2& table)
-  {
-    if (mFiltered != nullptr) {
-      table.bindExternalIndices(mFiltered.get());
-    }
-  }
-
   void updatePlaceholders(InitContext& context)
   {
     expressions::updatePlaceholders(filter, context);
   }
 
+  o2::soa::Filtered<T>* operator->()
+  {
+    return mFiltered.get();
+  }
+
   expressions::Filter filter;
   std::unique_ptr<o2::soa::Filtered<T>> mFiltered = nullptr;
+  gandiva::NodePtr tree = nullptr;
+  gandiva::FilterPtr gfilter = nullptr;
+  bool dataframeChanged = true;
 
   using iterator = typename o2::soa::Filtered<T>::iterator;
   using const_iterator = typename o2::soa::Filtered<T>::const_iterator;

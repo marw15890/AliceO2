@@ -17,8 +17,10 @@ o2_add_library(GlobalTracking
                        src/MatchCosmics.cxx
                        src/MatchCosmicsParams.cxx
                        src/MatchGlobalFwd.cxx
+                       src/MatchGlobalFwdAssessment.cxx
                        src/MatchITSTPCQC.cxx
                        src/ITSTPCMatchingQCParams.cxx
+                       src/MatchGlobalFwdParam.cxx
   PUBLIC_LINK_LIBRARIES O2::Framework
                         O2::DataFormatsTPC
                         O2::DataFormatsITSMFT
@@ -48,6 +50,8 @@ o2_add_library(GlobalTracking
 o2_target_root_dictionary(GlobalTracking
                           HEADERS include/GlobalTracking/MatchTPCITSParams.h
                                   include/GlobalTracking/MatchGlobalFwd.h
+                                  include/GlobalTracking/MatchGlobalFwdParam.h
+                                  include/GlobalTracking/MatchGlobalFwdAssessment.h
                                   include/GlobalTracking/MatchTOF.h
                                   include/GlobalTracking/MatchCosmics.h
                                   include/GlobalTracking/MatchCosmicsParams.h

@@ -49,8 +49,9 @@ void customize(std::vector<o2::framework::ConfigParamSpec>& workflowOptions)
     {"use-ccdb", o2::framework::VariantType::Bool, false, {"enable access to ccdb tof calibration objects"}},
     {"strict-matching", o2::framework::VariantType::Bool, false, {"High purity preliminary matching"}},
     {"output-type", o2::framework::VariantType::String, "matching-info,calib-info", {"matching-info, calib-info"}},
+    {"enable-dia", o2::framework::VariantType::Bool, false, {"to require diagnostic freq and then write to calib outputs"}},
     {"configKeyValues", VariantType::String, "", {"Semicolon separated key=value strings ..."}}};
-
+  o2::raw::HBFUtilsInitializer::addConfigOption(options);
   std::swap(workflowOptions, options);
 }
 
@@ -73,6 +74,7 @@ WorkflowSpec defineDataProcessing(ConfigContext const& configcontext)
   auto useFIT = configcontext.options().get<bool>("use-fit");
   auto useCCDB = configcontext.options().get<bool>("use-ccdb");
   auto strict = configcontext.options().get<bool>("strict-matching");
+  auto diagnostic = configcontext.options().get<bool>("enable-dia");
 
   bool writematching = 0;
   bool writecalib = 0;
@@ -88,22 +90,22 @@ WorkflowSpec defineDataProcessing(ConfigContext const& configcontext)
     useFIT = false;
   }
 
-  LOG(DEBUG) << "TOF MATCHER WORKFLOW configuration";
-  LOG(DEBUG) << "TOF track inputs = " << configcontext.options().get<std::string>("track-sources");
-  LOG(DEBUG) << "TOF output = " << outputType;
-  LOG(DEBUG) << "TOF disable-mc = " << configcontext.options().get<std::string>("disable-mc");
-  LOG(DEBUG) << "TOF use-ccdb = " << useCCDB;
-  LOG(DEBUG) << "TOF use-fit = " << useFIT;
-  LOG(DEBUG) << "TOF disable-root-input = " << disableRootIn;
-  LOG(DEBUG) << "TOF disable-root-output = " << disableRootOut;
-  LOG(DEBUG) << "TOF matching in strict mode = " << strict;
+  LOG(debug) << "TOF MATCHER WORKFLOW configuration";
+  LOG(debug) << "TOF track inputs = " << configcontext.options().get<std::string>("track-sources");
+  LOG(debug) << "TOF output = " << outputType;
+  LOG(debug) << "TOF disable-mc = " << configcontext.options().get<std::string>("disable-mc");
+  LOG(debug) << "TOF use-ccdb = " << useCCDB;
+  LOG(debug) << "TOF use-fit = " << useFIT;
+  LOG(debug) << "TOF disable-root-input = " << disableRootIn;
+  LOG(debug) << "TOF disable-root-output = " << disableRootOut;
+  LOG(debug) << "TOF matching in strict mode = " << strict;
 
   //GID::mask_t alowedSources = GID::getSourcesMask("TPC,ITS-TPC");
   GID::mask_t alowedSources = GID::getSourcesMask("TPC,ITS-TPC,TPC-TRD,ITS-TPC-TRD");
 
   GID::mask_t src = alowedSources & GID::getSourcesMask(configcontext.options().get<std::string>("track-sources"));
   if (strict && (src & ~GID::getSourcesMask("TPC,TPC-TRD")).any()) {
-    LOGP(WARNING, "In strict matching mode only TPC and TPC-TRD sources allowed, {} asked, redefining", GID::getSourcesNames(src));
+    LOGP(warning, "In strict matching mode only TPC and TPC-TRD sources allowed, {} asked, redefining", GID::getSourcesNames(src));
     src &= GID::getSourcesMask("TPC,TPC-TRD");
   }
   GID::mask_t mcmaskcl;
@@ -137,7 +139,7 @@ WorkflowSpec defineDataProcessing(ConfigContext const& configcontext)
       }
     }
     if (writecalib) {
-      specs.emplace_back(o2::tof::getTOFCalibWriterSpec("o2calib_tof.root", 0));
+      specs.emplace_back(o2::tof::getTOFCalibWriterSpec("o2calib_tof.root", 0, diagnostic));
     }
   }
 
