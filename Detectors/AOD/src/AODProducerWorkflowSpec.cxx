@@ -290,17 +290,10 @@ void AODProducerWorkflowDPL::fillTrackTablesPerCollision(int collisionID,
           // FwdTracks tracks are treated separately since they are stored in a different table
           const auto& track = data.getMCHTrack(trackIndex);
           if (collisionID < 0) {
-            InteractionRecord meanIR;
-            auto rofsMCH = data.getMCHTracksROFRecords();
-            for (const auto& rof : rofsMCH) {
-              if (trackIndex >= rof.getFirstIdx() && trackIndex <= rof.getLastIdx()) {
-                meanIR = rof.getBCData() + rof.getBCWidth() / 2;
-              }
-              math_utils::Point3D<double> vertex{};
-              // FIXME: should we get better
-              // than {0,0,0} as vertex here ?
-              addToFwdTracksTable(fwdTracksCursor, fwdTracksCovCursor, track, -1, vertex);
-            }
+            // FIXME: should we get better
+            // than {0,0,0} as vertex here ?
+            math_utils::Point3D<double> vertex{};
+            addToFwdTracksTable(fwdTracksCursor, fwdTracksCovCursor, track, collisionID, vertex);
           } else {
             math_utils::Point3D<double> vtx{vertex.getX(),
                                             vertex.getY(), vertex.getZ()};
@@ -1115,7 +1108,7 @@ void AODProducerWorkflowDPL::run(ProcessingContext& pc)
   auto& caloCellsTRGTableBuilder = pc.outputs().make<TableBuilder>(Output{"AOD", "CALOTRIGGER"});
 
   auto bcCursor = bcBuilder.cursor<o2::aod::BCs>();
-  auto cascadesCursor = cascadesBuilder.cursor<o2::aod::StoredCascades>();
+  auto cascadesCursor = cascadesBuilder.cursor<o2::aod::Cascades>();
   auto collisionsCursor = collisionsBuilder.cursor<o2::aod::Collisions>();
   auto fddCursor = fddBuilder.cursor<o2::aod::FDDs>();
   auto ft0Cursor = ft0Builder.cursor<o2::aod::FT0s>();
@@ -1132,7 +1125,7 @@ void AODProducerWorkflowDPL::run(ProcessingContext& pc)
   auto tracksCovCursor = tracksCovBuilder.cursor<o2::aodproducer::TracksCovTable>();
   auto tracksCursor = tracksBuilder.cursor<o2::aodproducer::TracksTable>();
   auto tracksExtraCursor = tracksExtraBuilder.cursor<o2::aodproducer::TracksExtraTable>();
-  auto v0sCursor = v0sBuilder.cursor<o2::aod::StoredV0s>();
+  auto v0sCursor = v0sBuilder.cursor<o2::aod::V0s>();
   auto zdcCursor = zdcBuilder.cursor<o2::aod::Zdcs>();
   auto caloCellsCursor = caloCellsBuilder.cursor<o2::aod::Calos>();
   auto caloCellsTRGTableCursor = caloCellsTRGTableBuilder.cursor<o2::aod::CaloTriggers>();
@@ -1284,10 +1277,12 @@ void AODProducerWorkflowDPL::run(ProcessingContext& pc)
         LOG(fatal) << "Error: could not find a corresponding BC ID for MC collision; BC = " << globalBC << ", mc collision = " << iCol;
       }
       auto& colParts = mcParts[iCol];
+      auto nParts = colParts.size();
       for (auto colPart : colParts) {
         auto eventID = colPart.entryID;
         auto sourceID = colPart.sourceID;
-        if (sourceID == 0) { // embedding: using background event info
+        // enable embedding: if several colParts exist, then they are saved as one collision
+        if (nParts == 1 || sourceID == 0) {
           // FIXME:
           // use generators' names for generatorIDs (?)
           short generatorID = sourceID;
@@ -1460,7 +1455,7 @@ void AODProducerWorkflowDPL::run(ProcessingContext& pc)
       LOG(warn) << "Could not find a negative track index for prong ID " << trNegID;
     }
     if (posTableIdx != -1 and negTableIdx != -1) {
-      v0sCursor(0, posTableIdx, negTableIdx);
+      v0sCursor(0, -1, posTableIdx, negTableIdx);
     }
   }
 
@@ -1474,7 +1469,7 @@ void AODProducerWorkflowDPL::run(ProcessingContext& pc)
     } else {
       LOG(warn) << "Could not find a bachelor track index";
     }
-    cascadesCursor(0, cascade.getV0ID(), bachTableIdx);
+    cascadesCursor(0, -1, cascade.getV0ID(), bachTableIdx);
   }
 
   mTableTrID = 0;
