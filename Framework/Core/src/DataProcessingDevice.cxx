@@ -135,6 +135,18 @@ DataProcessingDevice::DataProcessingDevice(RunningDeviceRef ref, ServiceRegistry
       }
     };
   }
+
+  std::function<void(const fair::mq::State)> stateWatcher = [this, &registry = mServiceRegistry](const fair::mq::State state) -> void {
+    auto& deviceState = registry.get<DeviceState>();
+    if (deviceState.nextFairMQState.empty() == false) {
+      auto state = deviceState.nextFairMQState.back();
+      this->ChangeState(state);
+      deviceState.nextFairMQState.pop_back();
+    }
+  };
+
+  this->SubscribeToStateChange("dpl", stateWatcher);
+
   // One task for now.
   mStreams.resize(1);
   mHandles.resize(1);
@@ -300,8 +312,6 @@ void DataProcessingDevice::Init()
     auto& name = mSpec.inputChannels[ci].name;
     if (name.find(mSpec.channelPrefix + "from_internal-dpl-clock") == 0) {
       mState.inputChannelInfos[ci].state = InputChannelState::Pull;
-    } else if (name.find(mSpec.channelPrefix + "from_internal-dpl-ccdb-backend") == 0) {
-      mState.inputChannelInfos[ci].state = InputChannelState::Pull;
     }
   }
 
@@ -424,7 +434,10 @@ void DataProcessingDevice::InitTask()
   // We add a timer only in case a channel poller is not there.
   if ((mStatefulProcess != nullptr) || (mStatelessProcess != nullptr)) {
     for (auto& x : fChannels) {
-      if ((x.first.rfind("from_internal-dpl", 0) == 0) && (x.first.rfind("from_internal-dpl-aod", 0) != 0) && (x.first.rfind("from_internal-dpl-injected", 0)) != 0) {
+      if ((x.first.rfind("from_internal-dpl", 0) == 0) &&
+          (x.first.rfind("from_internal-dpl-aod", 0) != 0) &&
+          (x.first.rfind("from_internal-dpl-ccdb-backend", 0) != 0) &&
+          (x.first.rfind("from_internal-dpl-injected", 0)) != 0) {
         LOG(debug) << x.first << " is an internal channel. Skipping as no input will come from there." << std::endl;
         continue;
       }
@@ -586,14 +599,21 @@ void DataProcessingDevice::PreRun()
 void DataProcessingDevice::PostRun()
 {
   mServiceRegistry.get<CallbackService>()(CallbackService::Id::Stop);
-  mServiceRegistry.preExitCallbacks();
+  mServiceRegistry.postStopCallbacks();
 }
 
-void DataProcessingDevice::Reset() { mServiceRegistry.get<CallbackService>()(CallbackService::Id::Reset); }
+void DataProcessingDevice::Reset()
+{
+  mServiceRegistry.get<CallbackService>()(CallbackService::Id::Reset);
+}
 
 void DataProcessingDevice::Run()
 {
   while (!NewStatePending()) {
+    if (mState.nextFairMQState.empty() == false) {
+      this->ChangeState(mState.nextFairMQState.back());
+      mState.nextFairMQState.pop_back();
+    }
     // Notify on the main thread the new region callbacks, making sure
     // no callback is issued if there is something still processing.
     {
@@ -1432,7 +1452,10 @@ bool DataProcessingDevice::tryDispatchComputation(DataProcessorContext& context,
     bool shouldConsume = action.op == CompletionPolicy::CompletionOp::Consume ||
                          action.op == CompletionPolicy::CompletionOp::Discard;
     InputSpan span = getInputSpan(action.slot, shouldConsume);
-    InputRecord record{context.deviceContext->spec->inputs, span};
+    InputRecord record{context.deviceContext->spec->inputs,
+                       span,
+                       context.objCache,
+                       context.registry->get<CallbackService>()};
     ProcessingContext processContext{record, *context.registry, *context.allocator};
     {
       ZoneScopedN("service pre processing");

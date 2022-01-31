@@ -20,11 +20,10 @@
 #include "Framework/Expressions.h"
 #include "Framework/ArrowTypes.h"
 #include "Framework/RuntimeError.h"
+#include "Framework/Kernels.h"
 #include <arrow/table.h>
 #include <arrow/array.h>
 #include <arrow/util/variant.h>
-#include <arrow/compute/kernel.h>
-#include <arrow/compute/api_aggregate.h>
 #include <gandiva/selection_vector.h>
 #include <cassert>
 #include <fmt/format.h>
@@ -75,6 +74,12 @@ inline constexpr bool is_type_spawnable_v = false;
 
 template <typename T>
 inline constexpr bool is_type_spawnable_v<T, std::void_t<decltype(sizeof(typename T::spawnable_t))>> = true;
+
+template <typename, typename = void>
+inline constexpr bool is_soa_extension_table_v = false;
+
+template <typename T>
+inline constexpr bool is_soa_extension_table_v<T, std::void_t<decltype(sizeof(typename T::expression_pack_t))>> = true;
 
 template <typename T, typename = void>
 inline constexpr bool is_index_table_v = false;
@@ -930,14 +935,12 @@ auto select(T const& t, framework::expressions::Filter const& f)
   return Filtered<T>({t.asArrowTable()}, selectionToVector(framework::expressions::createSelection(t.asArrowTable(), f)));
 }
 
-arrow::Status getSliceFor(int value, char const* key, std::shared_ptr<arrow::Table> const& input, std::shared_ptr<arrow::Table>& output, uint64_t& offset);
-
 template <typename T>
 auto sliceBy(T const& t, framework::expressions::BindingNode const& node, int value)
 {
   uint64_t offset = 0;
   std::shared_ptr<arrow::Table> result = nullptr;
-  auto status = getSliceFor(value, node.name.c_str(), t.asArrowTable(), result, offset);
+  auto status = o2::framework::getSliceFor(value, node.name.c_str(), t.asArrowTable(), result, offset);
   if (status.ok()) {
     return T({result}, offset);
   }
@@ -1254,15 +1257,7 @@ class Table
   arrow::Status initializeSliceCaches(char const* key)
   {
     mCurrentKey = key;
-    arrow::Datum value_counts;
-    auto options = arrow::compute::ScalarAggregateOptions::Defaults();
-    ARROW_ASSIGN_OR_RAISE(value_counts,
-                          arrow::compute::CallFunction("value_counts", {mTable->GetColumnByName(key)},
-                                                       &options));
-    auto pair = static_cast<arrow::StructArray>(value_counts.array());
-    mValues = std::make_shared<arrow::NumericArray<arrow::Int32Type>>(pair.field(0)->data());
-    mCounts = std::make_shared<arrow::NumericArray<arrow::Int64Type>>(pair.field(1)->data());
-    return arrow::Status::OK();
+    return o2::framework::getSlices(key, mTable, mValues, mCounts);
   }
 
  public:
@@ -1972,6 +1967,7 @@ constexpr auto is_binding_compatible_v()
     _Name_##Extension(std::shared_ptr<arrow::Table> table, uint64_t offset = 0) : o2::soa::Table<__VA_ARGS__>(table, offset){}; \
     _Name_##Extension(_Name_##Extension const&) = default;                                                                      \
     _Name_##Extension(_Name_##Extension&&) = default;                                                                           \
+    using expression_pack_t = framework::pack<__VA_ARGS__>;                                                                     \
     using iterator = typename base_t::template RowView<_Name_##Extension, _Name_##Extension>;                                   \
     using const_iterator = iterator;                                                                                            \
   };                                                                                                                            \
@@ -1980,7 +1976,7 @@ constexpr auto is_binding_compatible_v()
   struct _Name_##ExtensionMetadata : o2::soa::TableMetadata<_Name_##ExtensionMetadata> {                                        \
     using table_t = _Name_##Extension;                                                                                          \
     using base_table_t = typename _Table_::table_t;                                                                             \
-    using expression_pack_t = framework::pack<__VA_ARGS__>;                                                                     \
+    using expression_pack_t = typename _Name_##Extension::expression_pack_t;                                                    \
     using originals = soa::originals_pack_t<_Table_>;                                                                           \
     using sources = originals;                                                                                                  \
     static constexpr char const* mLabel = #_Name_ "Extension";                                                                  \
