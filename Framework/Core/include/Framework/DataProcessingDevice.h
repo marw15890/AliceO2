@@ -63,7 +63,9 @@ struct DeviceContext {
   ComputingQuotaEvaluator* quotaEvaluator = nullptr;
   DataProcessingStats* stats = nullptr;
   ComputingQuotaStats* quotaStats = nullptr;
+  uv_timer_t* gracePeriodTimer = nullptr;
   int expectedRegionCallbacks = 0;
+  int exitTransitionTimeout = 0;
 };
 
 struct DataProcessorContext {
@@ -87,7 +89,6 @@ struct DataProcessorContext {
   AlgorithmSpec::ProcessCallback* statefulProcess = nullptr;
   AlgorithmSpec::ProcessCallback* statelessProcess = nullptr;
   AlgorithmSpec::ErrorCallback* error = nullptr;
-  ObjectCache objCache;
 
   /// Wether or not the associated DataProcessor can forward things early
   bool canForwardEarly = true;
@@ -141,6 +142,10 @@ class DataProcessingDevice : public FairMQDevice
   void fillContext(DataProcessorContext& context, DeviceContext& deviceContext);
 
  private:
+  /// Initialise the socket pollers / timers
+  void initPollers();
+  void startPollers();
+  void stopPollers();
   DeviceContext mDeviceContext;
   /// The specification used to create the initial state of this device
   DeviceSpec const& mSpec;

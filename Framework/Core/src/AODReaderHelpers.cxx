@@ -95,15 +95,15 @@ AlgorithmSpec AODReaderHelpers::indexBuilderCallback(std::vector<InputSpec>& req
           using metadata_t = decltype(metadata);
           using Key = typename metadata_t::Key;
           using index_pack_t = typename metadata_t::index_pack_t;
-          using sources = typename metadata_t::originals;
+          using originals = typename metadata_t::originals;
           if constexpr (metadata_t::exclusive == true) {
             return o2::framework::IndexExclusive::indexBuilder(input.binding.c_str(), index_pack_t{},
                                                                extractTypedOriginal<Key>(pc),
-                                                               extractOriginalsTuple(sources{}, pc));
+                                                               extractOriginalsTuple(originals{}, pc));
           } else {
             return o2::framework::IndexSparse::indexBuilder(input.binding.c_str(), index_pack_t{},
                                                             extractTypedOriginal<Key>(pc),
-                                                            extractOriginalsTuple(sources{}, pc));
+                                                            extractOriginalsTuple(originals{}, pc));
           }
         };
 
@@ -168,7 +168,9 @@ AlgorithmSpec AODReaderHelpers::aodSpawnerCallback(std::vector<InputSpec>& reque
         } else if (description == header::DataDescription{"FWDTRACKCOV"}) {
           outputs.adopt(Output{origin, description}, maker(o2::aod::FwdTracksCovExtensionMetadata{}));
         } else if (description == header::DataDescription{"MCPARTICLE"}) {
-          outputs.adopt(Output{origin, description}, maker(o2::aod::McParticlesExtensionMetadata{}));
+          outputs.adopt(Output{origin, description}, maker(o2::aod::McParticles_000ExtensionMetadata{}));
+        } else if (description == header::DataDescription{"MCPARTICLE_001"}) {
+          outputs.adopt(Output{origin, description}, maker(o2::aod::McParticles_001ExtensionMetadata{}));
         } else {
           throw runtime_error("Not an extended table");
         }

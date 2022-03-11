@@ -14,6 +14,7 @@
 
 #include "DataFormatsITSMFT/Digit.h"
 #include "ITSMFTBase/SegmentationAlpide.h"
+#include "ITSMFTSimulation/DPLDigitizerParam.h"
 #include "ITSMFTSimulation/Digitizer.h"
 #include "MathUtils/Cartesian.h"
 #include "SimulationDataFormat/MCTruthContainer.h"
@@ -35,18 +36,60 @@ using namespace o2::itsmft;
 //_______________________________________________________________________
 void Digitizer::init()
 {
-  const Int_t numOfChips = mGeometry->getNumberOfChips();
-  mChips.resize(numOfChips);
-  for (int i = numOfChips; i--;) {
+  mNumberOfChips = mGeometry->getNumberOfChips();
+  mChips.resize(mNumberOfChips);
+  for (int i = mNumberOfChips; i--;) {
     mChips[i].setChipIndex(i);
   }
-  if (!mParams.getAlpSimResponse()) {
-    mAlpSimResp = std::make_unique<o2::itsmft::AlpideSimResponse>();
-    mAlpSimResp->initData();
-    mParams.setAlpSimResponse(mAlpSimResp.get());
+  // initializing for both collection tables
+  for (int i = 0; i < 2; i++) {
+    mAlpSimResp[i].initData(i);
+  }
+  // importing the parameters from DPLDigitizerParam.h
+  auto& doptMFT = DPLDigitizerParam<o2::detectors::DetID::MFT>::Instance();
+  auto& doptITS = DPLDigitizerParam<o2::detectors::DetID::ITS>::Instance();
+
+  // initializing response according to detector and back-bias value
+  if (doptMFT.Vbb == 0.0) { // for MFT
+    LOG(fatal) << "Charge-collection table not available yet";
+    mAlpSimRespMFT = mAlpSimResp;
+  } else if (doptMFT.Vbb == 3.0) {
+    mAlpSimRespMFT = mAlpSimResp + 1;
+  } else {
+    LOG(fatal) << "Invalid MFT back-bias value";
+  }
+
+  if (doptITS.IBVbb == 0.0) { // for ITS Inner Barrel
+    LOG(fatal) << "Charge-collection table not available yet";
+    mAlpSimRespIB = mAlpSimResp;
+  } else if (doptITS.IBVbb == 3.0) {
+    mAlpSimRespIB = mAlpSimResp + 1;
+  } else {
+    LOG(fatal) << "Invalid ITS Inner Barrel back-bias value";
+  }
+  if (doptITS.OBVbb == 0.0) { // for ITS Outter Barrel
+    LOG(fatal) << "Charge-collection table not available yet";
+    mAlpSimRespOB = mAlpSimResp;
+  } else if (doptITS.OBVbb == 3.0) {
+    mAlpSimRespOB = mAlpSimResp + 1;
+  } else {
+    LOG(fatal) << "Invalid ITS Outter Barrel back-bias value";
   }
   mParams.print();
   mIRFirstSampledTF = o2::raw::HBFUtils::Instance().getFirstSampledTFIR();
+}
+
+auto Digitizer::getChipResponse(int chipID)
+{
+  if (mNumberOfChips < 10000) { // in MFT
+    return mAlpSimRespMFT;
+  }
+
+  if (chipID < 432) { // in ITS Inner Barrel
+    return mAlpSimRespIB;
+  } else { // in ITS Outter Barrel
+    return mAlpSimRespOB;
+  }
 }
 
 //_______________________________________________________________________
@@ -138,6 +181,9 @@ void Digitizer::fillOutputContainer(uint32_t frameLast)
 
     auto& extra = *(mExtraBuff.front().get());
     for (auto& chip : mChips) {
+      if (chip.isDisabled()) {
+        continue;
+      }
       chip.addNoise(mROFrameMin, mROFrameMin, &mParams);
       auto& buffer = chip.getPreDigits();
       if (buffer.empty()) {
@@ -185,6 +231,12 @@ void Digitizer::fillOutputContainer(uint32_t frameLast)
 void Digitizer::processHit(const o2::itsmft::Hit& hit, uint32_t& maxFr, int evID, int srcID)
 {
   // convert single hit to digits
+  int chipID = hit.GetDetectorID();
+  auto& chip = mChips[chipID];
+  if (chip.isDisabled()) {
+    LOG(debug) << "skip disabled chip " << chipID;
+    return;
+  }
   float timeInROF = hit.GetTime() * sec2ns;
   if (timeInROF > 20e3) {
     const int maxWarn = 10;
@@ -280,7 +332,7 @@ void Digitizer::processHit(const o2::itsmft::Hit& hit, uint32_t& maxFr, int evID
   int rowPrev = -1, colPrev = -1, row, col;
   float cRowPix = 0.f, cColPix = 0.f; // local coordinated of the current pixel center
 
-  const o2::itsmft::AlpideSimResponse* resp = mParams.getAlpSimResponse();
+  const o2::itsmft::AlpideSimResponse* resp = getChipResponse(chipID);
 
   // take into account that the AlpideSimResponse depth defintion has different min/max boundaries
   // although the max should coincide with the surface of the epitaxial layer, which in the chip
@@ -325,7 +377,6 @@ void Digitizer::processHit(const o2::itsmft::Hit& hit, uint32_t& maxFr, int evID
 
   // fire the pixels assuming Poisson(n_response_electrons)
   o2::MCCompLabel lbl(hit.GetTrackID(), evID, srcID, false);
-  auto& chip = mChips[hit.GetDetectorID()];
   auto roFrameAbs = mNewROFrame + roFrameRel;
   for (int irow = rowSpan; irow--;) {
     uint16_t rowIS = irow + rowS;
@@ -397,4 +448,13 @@ void Digitizer::registerDigits(ChipDigitsContainer& chip, uint32_t roFrame, floa
       extra->emplace_back(lbl);
     }
   }
+}
+
+//________________________________________________________________________________
+void Digitizer::setNoiseMap(const o2::itsmft::NoiseMap* mp)
+{
+  for (int i = 0; i < mNumberOfChips; i++) {
+    mChips[i].disable(mp->isFullChipMasked(i));
+  }
+  mNoiseMap = mp;
 }

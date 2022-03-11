@@ -50,6 +50,24 @@ class TPCCalibPadGainTracksDevice : public o2::framework::Task
     const auto overflowBin = ic.options().get<bool>("overflowBin");
     mPadGainTracks.init(nBins, reldEdxMin, reldEdxMax, underflowBin, overflowBin);
 
+    const auto dedxRegionType = ic.options().get<bool>("dedxRegionType");
+    mPadGainTracks.setdEdxRegion(static_cast<CalibPadGainTracks::DEdxRegion>(dedxRegionType));
+
+    const auto dedxType = ic.options().get<bool>("dedxType");
+    mPadGainTracks.setMode(static_cast<CalibPadGainTracks::DEdxType>(dedxType));
+
+    const std::string refGainMapFile = ic.options().get<std::string>("refGainMapFile");
+    if (!refGainMapFile.empty()) {
+      LOGP(info, "Loading GainMap from file {}", refGainMapFile);
+      mPadGainTracks.setRefGainMap(refGainMapFile.data(), "GainMap");
+    }
+
+    const std::string polynomialsFile = ic.options().get<std::string>("polynomialsFile");
+    if (!polynomialsFile.empty()) {
+      LOGP(info, "Loading polynomials from file {}", polynomialsFile);
+      mPadGainTracks.loadPolTopologyCorrectionFromFile(polynomialsFile.data());
+    }
+
     float field = ic.options().get<float>("field");
     if (field <= -10.f) {
       const auto inputGRP = o2::base::NameConf::getGRPFileName();
@@ -136,6 +154,10 @@ DataProcessorSpec getTPCCalibPadGainTracksSpec(const uint32_t publishAfterTFs, c
       {"momMax", VariantType::Float, 5.f, {"maximum momentum of the tracks which are used for the pad-by-pad gain map"}},
       {"etaMax", VariantType::Float, 1.f, {"maximum eta of the tracks which are used for the pad-by-pad gain map"}},
       {"minClusters", VariantType::Int, 50, {"minimum number of clusters of tracks which are used for the pad-by-pad gain map"}},
+      {"refGainMapFile", VariantType::String, "", {"file to reference gain map, which will be used for correcting the cluster charge"}},
+      {"polynomialsFile", VariantType::String, "", {"file containing the polynomials for the track topology correction"}},
+      {"dedxRegionType", VariantType::Int, 1, {"using the dE/dx per chamber (0), stack (1) or per sector (2)"}},
+      {"dedxType", VariantType::Int, 0, {"recalculating the dE/dx (0), using it from tracking (1)"}},
     }}; // end DataProcessorSpec
 }
 

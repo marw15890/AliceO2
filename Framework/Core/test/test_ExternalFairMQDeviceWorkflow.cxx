@@ -290,7 +290,7 @@ std::vector<DataProcessorSpec> defineDataProcessing(ConfigContext const& config)
     auto const* mmh = DataRefUtils::getHeader<test_header::MsgModeHeader*>(inputs.get("datain"));
     ASSERT_ERROR(dh != nullptr);
     ASSERT_ERROR(mmh != nullptr);
-    LOGP(info, "{} input slots(s), data {}, parts {}, mode {}", inputs.size(), inputs.get<int>("datain"), mmh->nPayloadParts, mmh->mode);
+    LOGP(info, "{} input slots(s), data {}, parts {}, mode {}", inputs.size(), inputs.get<int>("datain"), mmh->nPayloadParts, (int)mmh->mode);
     if (mmh->mode == test_header::MsgModeHeader::MsgMode::Pair) {
       ASSERT_ERROR(dh->splitPayloadParts == mmh->nPayloadParts);
       ASSERT_ERROR(dh->splitPayloadIndex == 0);
@@ -373,17 +373,28 @@ std::vector<DataProcessorSpec> defineDataProcessing(ConfigContext const& config)
     if (channelName.empty()) {
       return;
     }
-    // make a copy of the header message, get the data header and change origin
-    auto outHeaderMessage = device.NewMessageFor(channelName, 0, inputs.At(msgidx)->GetSize());
-    memcpy(outHeaderMessage->GetData(), inputs.At(msgidx)->GetData(), inputs.At(msgidx)->GetSize());
-    // this we obviously need to fix in the get API, const'ness of the returned header pointer
-    // should depend on const'ness of the buffer
-    auto odh = const_cast<o2::header::DataHeader*>(o2::header::get<o2::header::DataHeader*>(outHeaderMessage->GetData()));
-    odh->dataOrigin = o2::header::DataOrigin("PRX");
     FairMQParts output;
-    output.AddPart(std::move(outHeaderMessage));
-    output.AddPart(std::move(inputs.At(msgidx + 1)));
-    LOG(debug) << "sending " << DataSpecUtils::describe(OutputSpec{odh->dataOrigin, odh->dataDescription, odh->subSpecification});
+    for (; msgidx < inputs.Size(); ++msgidx) {
+      auto const* dh = o2::header::get<o2::header::DataHeader*>(inputs.At(msgidx)->GetData());
+      if (dh) {
+        LOGP(debug, "{}/{}/{} with {} part(s), index {}",
+             dh->dataOrigin.as<std::string>(),
+             dh->dataDescription.as<std::string>(),
+             dh->subSpecification,
+             dh->splitPayloadParts,
+             dh->splitPayloadIndex);
+        // make a copy of the header message, get the data header and change origin
+        auto outHeaderMessage = device.NewMessageFor(channelName, 0, inputs.At(msgidx)->GetSize());
+        memcpy(outHeaderMessage->GetData(), inputs.At(msgidx)->GetData(), inputs.At(msgidx)->GetSize());
+        // this we obviously need to fix in the get API, const'ness of the returned header pointer
+        // should depend on const'ness of the buffer
+        auto odh = const_cast<o2::header::DataHeader*>(o2::header::get<o2::header::DataHeader*>(outHeaderMessage->GetData()));
+        odh->dataOrigin = o2::header::DataOrigin("PRX");
+        output.AddPart(std::move(outHeaderMessage));
+      } else {
+        output.AddPart(std::move(inputs.At(msgidx)));
+      }
+    }
     o2::framework::sendOnChannel(device, output, channelName);
   };
 

@@ -48,6 +48,7 @@
 
 #include <regex>
 #include <algorithm>
+#include <numeric>
 
 using namespace o2::framework;
 using namespace o2::gpu;
@@ -101,6 +102,7 @@ void TRDGlobalTracking::init(InitContext& ic)
   cfgRecoStep.outputs.clear();
   mRec = GPUReconstruction::CreateInstance("CPU", true);
   mRec->SetSettings(o2::base::Propagator::Instance()->getNominalBz(), &cfgRecoStep);
+  mRec->GetNonConstParam().rec.trd.useExternalO2DefaultPropagator = true;
 
   mChainTracking = mRec->AddChain<GPUChainTracking>();
 

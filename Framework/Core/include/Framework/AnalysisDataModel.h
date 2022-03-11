@@ -93,7 +93,7 @@ namespace track
 {
 // TRACKPAR TABLE definition
 DECLARE_SOA_INDEX_COLUMN(Collision, collision);    //! Collision to which this track belongs
-DECLARE_SOA_COLUMN(TrackType, trackType, uint8_t); //! Type of track. See enum TrackTypeEnum
+DECLARE_SOA_COLUMN(TrackType, trackType, uint8_t); //! Type of track. See enum TrackTypeEnum. This cannot be used to decide which detector has contributed to this track. Use hasITS, hasTPC, etc.
 DECLARE_SOA_COLUMN(X, x, float);                   //!
 DECLARE_SOA_COLUMN(Alpha, alpha, float);           //!
 DECLARE_SOA_COLUMN(Y, y, float);                   //!
@@ -135,6 +135,14 @@ DECLARE_SOA_DYNAMIC_COLUMN(Pz, pz, //! Momentum in z-direction in GeV/c
 
 DECLARE_SOA_EXPRESSION_COLUMN(P, p, float, //! Momentum in Gev/c
                               0.5f * (ntan(PIQuarter - 0.5f * natan(aod::track::tgl)) + 1.f / ntan(PIQuarter - 0.5f * natan(aod::track::tgl))) / nabs(aod::track::signed1Pt));
+DECLARE_SOA_DYNAMIC_COLUMN(Rapidity, rapidity, //! Track rapidity, computed under the mass assumption given as input
+                           [](float signed1Pt, float tgl, float mass) -> float {
+                             auto pt = 1.f / std::abs(signed1Pt);
+                             auto pz = pt * tgl;
+                             auto p = 0.5f * (tan(PIQuarter - 0.5f * atan(tgl)) + 1.f / tan(PIQuarter - 0.5f * atan(tgl))) * pt;
+                             auto energy = sqrt(p * p + mass * mass);
+                             return 0.5f * log((energy + pz) / (energy - pz));
+                           });
 
 // TRACKPARCOV TABLE definition
 DECLARE_SOA_COLUMN(SigmaY, sigmaY, float);        //! Covariance matrix
@@ -274,6 +282,7 @@ DECLARE_SOA_TABLE_FULL(StoredTracks, "Tracks", "AOD", "TRACK", //! On disk versi
                        track::Px<track::Signed1Pt, track::Snp, track::Alpha>,
                        track::Py<track::Signed1Pt, track::Snp, track::Alpha>,
                        track::Pz<track::Signed1Pt, track::Tgl>,
+                       track::Rapidity<track::Signed1Pt, track::Tgl>,
                        track::Sign<track::Signed1Pt>);
 
 DECLARE_SOA_EXTENDED_TABLE(Tracks, StoredTracks, "TRACK", //! Basic track properties
@@ -795,8 +804,8 @@ DECLARE_SOA_SELF_INDEX_COLUMN_FULL(Mother0, mother0, int, "McParticles_Mother0")
 DECLARE_SOA_SELF_INDEX_COLUMN_FULL(Mother1, mother1, int, "McParticles_Mother1");       //! Track index of the last mother
 DECLARE_SOA_SELF_INDEX_COLUMN_FULL(Daughter0, daughter0, int, "McParticles_Daughter0"); //! Track index of the first daugther
 DECLARE_SOA_SELF_INDEX_COLUMN_FULL(Daughter1, daughter1, int, "McParticles_Daughter1"); //! Track index of the last daugther
-DECLARE_SOA_SELF_SLICE_INDEX_COLUMN(Daughters, daughters);                              //! Daughter tracks (possibly empty) slice
-DECLARE_SOA_SELF_ARRAY_INDEX_COLUMN(Mothers, mothers);                                  //! Mother tracks (possible empty) array
+DECLARE_SOA_SELF_ARRAY_INDEX_COLUMN(Mothers, mothers);                                  //! Mother tracks (possible empty) array. Iterate over mcParticle.mothers_as<aod::McParticles>())
+DECLARE_SOA_SELF_SLICE_INDEX_COLUMN(Daughters, daughters);                              //! Daughter tracks (possibly empty) slice. Check for non-zero with mcParticle.has_daughters(). Iterate over mcParticle.daughters_as<aod::McParticles>())
 DECLARE_SOA_COLUMN(Weight, weight, float);                                              //! MC weight
 DECLARE_SOA_COLUMN(Px, px, float);                                                      //! Momentum in x in GeV/c
 DECLARE_SOA_COLUMN(Py, py, float);                                                      //! Momentum in y in GeV/c
@@ -847,7 +856,7 @@ DECLARE_SOA_EXPRESSION_COLUMN(Y, y, float, //! Particle rapidity, conditionally 
                                                  (aod::mcparticle::e - aod::mcparticle::pz))));
 } // namespace mcparticle
 
-DECLARE_SOA_TABLE_FULL(StoredMcParticles, "McParticles", "AOD", "MCPARTICLE", //! On disk version of the MC particle table
+DECLARE_SOA_TABLE_FULL(StoredMcParticles_000, "McParticles", "AOD", "MCPARTICLE", //! MC particle table, version 000
                        o2::soa::Index<>, mcparticle::McCollisionId,
                        mcparticle::PdgCode, mcparticle::StatusCode, mcparticle::Flags,
                        mcparticle::Mother0Id, mcparticle::Mother1Id,
@@ -860,15 +869,42 @@ DECLARE_SOA_TABLE_FULL(StoredMcParticles, "McParticles", "AOD", "MCPARTICLE", //
                        mcparticle::GetProcess<mcparticle::Flags, mcparticle::StatusCode>,
                        mcparticle::IsPhysicalPrimary<mcparticle::Flags>);
 
-DECLARE_SOA_EXTENDED_TABLE(McParticles, StoredMcParticles, "MCPARTICLE", //! Basic MC particle properties
+DECLARE_SOA_TABLE_FULL(StoredMcParticles_001, "McParticles_001", "AOD", "MCPARTICLE_001", //! MC particle table, version 001
+                       o2::soa::Index<>, mcparticle::McCollisionId,
+                       mcparticle::PdgCode, mcparticle::StatusCode, mcparticle::Flags,
+                       mcparticle::MothersIds, mcparticle::DaughtersIdSlice, mcparticle::Weight,
+                       mcparticle::Px, mcparticle::Py, mcparticle::Pz, mcparticle::E,
+                       mcparticle::Vx, mcparticle::Vy, mcparticle::Vz, mcparticle::Vt,
+                       mcparticle::ProducedByGenerator<mcparticle::Flags>,
+                       mcparticle::FromBackgroundEvent<mcparticle::Flags>,
+                       mcparticle::GetGenStatusCode<mcparticle::Flags, mcparticle::StatusCode>,
+                       mcparticle::GetProcess<mcparticle::Flags, mcparticle::StatusCode>,
+                       mcparticle::IsPhysicalPrimary<mcparticle::Flags>);
+
+DECLARE_SOA_EXTENDED_TABLE(McParticles_000, StoredMcParticles_000, "MCPARTICLE", //! Basic MC particle properties
                            mcparticle::Phi,
                            mcparticle::Eta,
                            mcparticle::Pt,
                            mcparticle::P,
                            mcparticle::Y);
 
-using McParticle = McParticles::iterator;
+DECLARE_SOA_EXTENDED_TABLE(McParticles_001, StoredMcParticles_001, "MCPARTICLE_001", //! Basic MC particle properties
+                           mcparticle::Phi,
+                           mcparticle::Eta,
+                           mcparticle::Pt,
+                           mcparticle::P,
+                           mcparticle::Y);
 
+using McParticles = McParticles_001;
+using McParticle = McParticles::iterator;
+} // namespace aod
+namespace soa
+{
+DECLARE_EQUIVALENT_FOR_INDEX(aod::StoredMcParticles_000, aod::StoredMcParticles_001);
+}
+
+namespace aod
+{
 namespace mctracklabel
 {
 DECLARE_SOA_INDEX_COLUMN(McParticle, mcParticle); //! MC particle

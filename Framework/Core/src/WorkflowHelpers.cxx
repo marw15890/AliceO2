@@ -158,7 +158,7 @@ void WorkflowHelpers::addMissingOutputsToReader(std::vector<OutputSpec> const& p
   }
 }
 
-void WorkflowHelpers::addMissingOutputsToCreator(std::vector<InputSpec>&& requestedSpecials,
+void WorkflowHelpers::addMissingOutputsToSpawner(std::vector<InputSpec> const& requestedSpecials,
                                                  std::vector<InputSpec>& requestedAODs,
                                                  DataProcessorSpec& publisher)
 {
@@ -173,6 +173,31 @@ void WorkflowHelpers::addMissingOutputsToCreator(std::vector<InputSpec>&& reques
           publisher.inputs.push_back(spec);
         }
         DataSpecUtils::updateInputList(requestedAODs, std::move(spec));
+      }
+    }
+  }
+}
+
+void WorkflowHelpers::addMissingOutputsToBuilder(std::vector<InputSpec> const& requestedSpecials,
+                                                 std::vector<InputSpec>& requestedAODs,
+                                                 std::vector<InputSpec>& requestedDYNs,
+                                                 DataProcessorSpec& publisher)
+{
+  for (auto& input : requestedSpecials) {
+    auto concrete = DataSpecUtils::asConcreteDataMatcher(input);
+    publisher.outputs.emplace_back(OutputSpec{concrete.origin, concrete.description, concrete.subSpec});
+    for (auto& i : input.metadata) {
+      if ((i.type == VariantType::String) && (i.name.find("input:") != std::string::npos)) {
+        auto spec = DataSpecUtils::fromMetadataString(i.defaultValue.get<std::string>());
+        auto j = std::find_if(publisher.inputs.begin(), publisher.inputs.end(), [&](auto x) { return x.binding == spec.binding; });
+        if (j == publisher.inputs.end()) {
+          publisher.inputs.push_back(spec);
+        }
+        if (DataSpecUtils::partialMatch(spec, header::DataOrigin{"AOD"})) {
+          DataSpecUtils::updateInputList(requestedAODs, std::move(spec));
+        } else if (DataSpecUtils::partialMatch(spec, header::DataOrigin{"DYN"})) {
+          DataSpecUtils::updateInputList(requestedDYNs, std::move(spec));
+        }
       }
     }
   }
@@ -339,6 +364,7 @@ void WorkflowHelpers::injectServiceDevices(WorkflowSpec& workflow, ConfigContext
           if (hasOption == false) {
             processor.options.push_back(ConfigParamSpec{"out-of-band-channel-name-" + input.binding, VariantType::String, "out-of-band", {"channel to listen for out of band data"}});
           }
+          timer.outputs.emplace_back(OutputSpec{concrete.origin, concrete.description, concrete.subSpec, Lifetime::Enumeration});
         } break;
         case Lifetime::QA:
         case Lifetime::Transient:
@@ -404,8 +430,8 @@ void WorkflowHelpers::injectServiceDevices(WorkflowSpec& workflow, ConfigContext
     readers::AODReaderHelpers::indexBuilderCallback(requestedIDXs),
     {}};
 
-  addMissingOutputsToCreator(std::move(requestedDYNs), requestedAODs, aodSpawner);
-  addMissingOutputsToCreator(std::move(requestedIDXs), requestedAODs, indexBuilder);
+  addMissingOutputsToBuilder(requestedIDXs, requestedAODs, requestedDYNs, indexBuilder);
+  addMissingOutputsToSpawner(requestedDYNs, requestedAODs, aodSpawner);
 
   addMissingOutputsToReader(providedAODs, requestedAODs, aodReader);
   addMissingOutputsToReader(providedCCDBs, requestedCCDBs, ccdbBackend);
@@ -462,34 +488,46 @@ void WorkflowHelpers::injectServiceDevices(WorkflowSpec& workflow, ConfigContext
 
   if (ccdbBackend.outputs.empty() == false) {
     ccdbBackend.outputs.push_back(OutputSpec{"CTP", "OrbitReset", 0});
-    bool hasDISTSTF = false;
+    bool providesDISTSTF = false;
     InputSpec matcher{"dstf", "FLP", "DISTSUBTIMEFRAME"};
-    ConcreteDataMatcher dstf{"FLP", "DISTSUBTIMEFRAME", 0};
+    ConcreteDataMatcher dstf{"FLP", "DISTSUBTIMEFRAME", 0xccdb};
+    // Check if any of the provided outputs is a DISTSTF
     for (auto& dp : workflow) {
       for (auto& output : dp.outputs) {
         if (DataSpecUtils::match(matcher, output)) {
-          hasDISTSTF = true;
+          providesDISTSTF = true;
           dstf = DataSpecUtils::asConcreteDataMatcher(output);
           break;
         }
       }
-      if (hasDISTSTF) {
+      if (providesDISTSTF) {
         break;
       }
     }
+    // * If there are AOD outputs we use TFNumber as the CCDB clock
+    // * If one device provides a DISTSTF we use that as the CCDB clock
+    // * If one of the devices provides a timer we use that as the CCDB clock
+    // * If none of the above apply add to the first data processor
+    //   which has no inputs apart from enumerations the responsibility
+    //   to provide the DISTSUBTIMEFRAME.
     if (aodReader.outputs.empty() == false) {
       ccdbBackend.inputs.push_back(InputSpec{"tfn", "TFN", "TFNumber"});
-    } else if (hasDISTSTF) {
-      ccdbBackend.inputs.push_back(InputSpec{"tfn", dstf});
+    } else if (providesDISTSTF) {
+      ccdbBackend.inputs.push_back(InputSpec{"tfn", dstf, Lifetime::Timeframe});
     } else {
-      InputSpec input{"enumeration",
-                      "DPL",
-                      "ENUM",
-                      static_cast<DataAllocator::SubSpecificationType>(compile_time_hash("internal-dpl-ccdb-backend")),
-                      Lifetime::Enumeration};
-      ccdbBackend.inputs.push_back(input);
-      auto concrete = DataSpecUtils::asConcreteDataMatcher(input);
-      timer.outputs.emplace_back(OutputSpec{concrete.origin, concrete.description, concrete.subSpec, Lifetime::Enumeration});
+      for (auto& dp : workflow) {
+        bool enumOnly = dp.inputs.size() == 1 && dp.inputs[0].lifetime == Lifetime::Enumeration;
+        bool timerOnly = dp.inputs.size() == 1 && dp.inputs[0].lifetime == Lifetime::Timer;
+        if (enumOnly == true) {
+          dp.outputs.push_back(OutputSpec{{"ccdb-diststf"}, dstf, Lifetime::Timeframe});
+          ccdbBackend.inputs.push_back(InputSpec{"tfn", dstf, Lifetime::Timeframe});
+          break;
+        } else if (timerOnly == true) {
+          dstf = DataSpecUtils::asConcreteDataMatcher(dp.outputs[0]);
+          ccdbBackend.inputs.push_back(InputSpec{{"tfn"}, dstf, Lifetime::Timeframe});
+          break;
+        }
+      }
     }
     extraSpecs.push_back(ccdbBackend);
   }
@@ -581,6 +619,13 @@ void WorkflowHelpers::injectServiceDevices(WorkflowSpec& workflow, ConfigContext
     std::vector<InputSpec> ignored = unmatched;
     ignored.insert(ignored.end(), redirectedOutputsInputs.begin(), redirectedOutputsInputs.end());
     int rateLimitingIPCID = std::stoi(ctx.options().get<std::string>("timeframes-rate-limit-ipcid"));
+    for (auto& ignoredInput : ignored) {
+      if (ignoredInput.lifetime == Lifetime::OutOfBand) {
+        // FIXME: Use Lifetime::Dangling when fully working?
+        ignoredInput.lifetime = Lifetime::Timeframe;
+      }
+    }
+
     extraSpecs.push_back(CommonDataProcessors::getDummySink(ignored, rateLimitingIPCID));
   }
 

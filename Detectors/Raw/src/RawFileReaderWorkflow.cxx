@@ -16,6 +16,7 @@
 #include "Framework/DataSpecUtils.h"
 #include "Framework/ConcreteDataMatcher.h"
 #include "Framework/ControlService.h"
+#include "Framework/SourceInfoHeader.h"
 #include "Framework/DataProcessingHeader.h"
 #include "Framework/Task.h"
 #include "Framework/Logger.h"
@@ -209,7 +210,22 @@ void RawReaderSpecs::run(o2f::ProcessingContext& ctx)
       for (int i = 0; i < NTimers; i++) {
         LOGF(info, "Timing for %15s: Cpu: %.3e Real: %.3e s in %d slots", TimerName[i], mTimer[i].CpuTime(), mTimer[i].RealTime(), mTimer[i].Counter() - 1);
       }
-      ctx.services().get<o2f::ControlService>().endOfStream();
+      if (!mRawChannelName.empty()) { // send endOfStream message to raw channel
+        o2f::SourceInfoHeader exitHdr;
+        exitHdr.state = o2::framework::InputChannelState::Completed;
+        const auto exitStack = o2::header::Stack(o2h::DataHeader(o2h::gDataDescriptionInfo, o2h::gDataOriginAny, 0, 0), o2f::DataProcessingHeader(), exitHdr);
+        auto fmqFactory = device->GetChannel(mRawChannelName, 0).Transport();
+        auto hdEOSMessage = fmqFactory->CreateMessage(exitStack.size(), fair::mq::Alignment{64});
+        auto plEOSMessage = fmqFactory->CreateMessage(0, fair::mq::Alignment{64});
+        memcpy(hdEOSMessage->GetData(), exitStack.data(), exitStack.size());
+        FairMQParts eosMsg;
+        eosMsg.AddPart(std::move(hdEOSMessage));
+        eosMsg.AddPart(std::move(plEOSMessage));
+        device->Send(eosMsg, mRawChannelName);
+        LOG(info) << "Sent EoS message to " << mRawChannelName;
+      } else {
+        ctx.services().get<o2f::ControlService>().endOfStream();
+      }
       ctx.services().get<o2f::ControlService>().readyToQuit(o2f::QuitRequest::Me);
       return;
     }
@@ -287,9 +303,10 @@ void RawReaderSpecs::run(o2f::ProcessingContext& ctx)
   }
 
   // send sTF acknowledge message
-  {
+  unsigned stfSS[2] = {0, 0xccdb};
+  for (int iss = 0; iss < 2; iss++) {
     o2::header::STFHeader stfHeader{mTFCounter, firstOrbit, 0};
-    o2::header::DataHeader stfDistDataHeader(o2::header::gDataDescriptionDISTSTF, o2::header::gDataOriginFLP, 0, sizeof(o2::header::STFHeader), 0, 1);
+    o2::header::DataHeader stfDistDataHeader(o2::header::gDataDescriptionDISTSTF, o2::header::gDataOriginFLP, stfSS[iss], sizeof(o2::header::STFHeader), 0, 1);
     stfDistDataHeader.payloadSerializationMethod = o2h::gSerializationMethodNone;
     stfDistDataHeader.firstTForbit = stfHeader.firstOrbit;
     stfDistDataHeader.tfCounter = mTFCounter;
@@ -343,6 +360,7 @@ o2f::DataProcessorSpec getReaderSpec(ReaderInp rinp)
     }
     // add output for DISTSUBTIMEFRAME
     spec.outputs.emplace_back(o2f::OutputSpec{{"stfDist"}, o2::header::gDataOriginFLP, o2::header::gDataDescriptionDISTSTF, 0});
+    spec.outputs.emplace_back(o2f::OutputSpec{{"stfDist"}, o2::header::gDataOriginFLP, o2::header::gDataDescriptionDISTSTF, 0xccdb});
   } else {
     auto nameStart = rinp.rawChannelConfig.find("name=");
     if (nameStart == std::string::npos) {
