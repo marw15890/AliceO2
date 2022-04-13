@@ -64,6 +64,7 @@
 #include "O2ControlHelpers.h"
 #include "DeviceSpecHelpers.h"
 #include "GraphvizHelpers.h"
+#include "MermaidHelpers.h"
 #include "PropertyTreeHelpers.h"
 #include "SimpleResourceManager.h"
 #include "WorkflowSerializationHelpers.h"
@@ -971,14 +972,14 @@ void doDPLException(RuntimeErrorRef& e, char const* processName)
   if (err.maxBacktrace != 0) {
     LOGP(fatal,
          "Unhandled o2::framework::runtime_error reached the top of main of {}, device shutting down."
-         "\n Reason: "
+         "\n Reason: {}"
          "\n Backtrace follow: \n",
          processName, err.what);
     demangled_backtrace_symbols(err.backtrace, err.maxBacktrace, STDERR_FILENO);
   } else {
     LOGP(fatal,
          "Unhandled o2::framework::runtime_error reached the top of main of {}, device shutting down."
-         "\n Reason: "
+         "\n Reason: {}"
          "\n Recompile with DPL_ENABLE_BACKTRACE=1 to get more information.",
          processName, err.what);
   }
@@ -1053,6 +1054,7 @@ int doChild(int argc, char** argv, ServiceRegistry& serviceRegistry,
   std::unique_ptr<SimpleRawDeviceService> simpleRawDeviceService;
   std::unique_ptr<DeviceState> deviceState;
   std::unique_ptr<ComputingQuotaEvaluator> quotaEvaluator;
+  std::unique_ptr<FairMQDeviceProxy> deviceProxy;
 
   auto afterConfigParsingCallback = [&simpleRawDeviceService,
                                      &runningWorkflow,
@@ -1061,6 +1063,7 @@ int doChild(int argc, char** argv, ServiceRegistry& serviceRegistry,
                                      &quotaEvaluator,
                                      &serviceRegistry,
                                      &deviceState,
+                                     &deviceProxy,
                                      &processingPolicies,
                                      &loop](fair::mq::DeviceRunner& r) {
     simpleRawDeviceService = std::make_unique<SimpleRawDeviceService>(nullptr, spec);
@@ -2172,7 +2175,23 @@ void initialiseDriverControl(bpo::variables_map const& varmap,
     control.state = DriverControlState::PLAY;
   }
 
-  if (varmap["graphviz"].as<bool>()) {
+  if (varmap["mermaid"].as<bool>()) {
+    // Dump a mermaid representation of what I will do.
+    control.callbacks = {[](WorkflowSpec const&,
+                            DeviceSpecs const& specs,
+                            DeviceExecutions const&,
+                            DataProcessorInfos&,
+                            CommandInfo const&) {
+      MermaidHelpers::dumpDeviceSpec2Mermaid(std::cout, specs);
+    }};
+    control.forcedTransitions = {
+      DriverState::EXIT,                    //
+      DriverState::PERFORM_CALLBACKS,       //
+      DriverState::MERGE_CONFIGS,           //
+      DriverState::IMPORT_CURRENT_WORKFLOW, //
+      DriverState::MATERIALISE_WORKFLOW     //
+    };
+  } else if (varmap["graphviz"].as<bool>()) {
     // Dump a graphviz representation of what I will do.
     control.callbacks = {[](WorkflowSpec const&,
                             DeviceSpecs const& specs,
@@ -2387,7 +2406,8 @@ int doMain(int argc, char** argv, o2::framework::WorkflowSpec const& workflow,
      "what to do when a device has an error: quit, wait")                                                                                                 //                                                                                                                            //
     ("min-failure-level", bpo::value<LogParsingHelpers::LogLevel>(&minFailureLevel)->default_value(LogParsingHelpers::LogLevel::Fatal),                   //                                                                                                                          //
      "minimum message level which will be considered as fatal and exit with 1")                                                                           //                                                                                                                            //
-    ("graphviz,g", bpo::value<bool>()->zero_tokens()->default_value(false), "produce graph output")                                                       //                                                                                                                              //
+    ("graphviz,g", bpo::value<bool>()->zero_tokens()->default_value(false), "produce graphviz output")                                                    //                                                                                                                              //
+    ("mermaid", bpo::value<bool>()->zero_tokens()->default_value(false), "produce graph output in mermaid format")                                        //                                                                                                                              //
     ("timeout,t", bpo::value<uint64_t>()->default_value(0), "forced exit timeout (in seconds)")                                                           //                                                                                                                                //
     ("dds,D", bpo::value<bool>()->zero_tokens()->default_value(false), "create DDS configuration")                                                        //                                                                                                                                  //
     ("dds-workflow-suffix,D", bpo::value<std::string>()->default_value(""), "suffix for DDS names")                                                       //                                                                                                                                  //
@@ -2601,12 +2621,16 @@ int doMain(int argc, char** argv, o2::framework::WorkflowSpec const& workflow,
   conflicting_options(varmap, "dds", "dump-workflow");
   conflicting_options(varmap, "dds", "run");
   conflicting_options(varmap, "dds", "graphviz");
+  conflicting_options(varmap, "dds", "mermaid");
   conflicting_options(varmap, "o2-control", "dump-workflow");
   conflicting_options(varmap, "o2-control", "run");
   conflicting_options(varmap, "o2-control", "graphviz");
+  conflicting_options(varmap, "o2-control", "mermaid");
   conflicting_options(varmap, "run", "dump-workflow");
   conflicting_options(varmap, "run", "graphviz");
+  conflicting_options(varmap, "run", "mermaid");
   conflicting_options(varmap, "dump-workflow", "graphviz");
+  conflicting_options(varmap, "dump-workflow", "mermaid");
   conflicting_options(varmap, "no-batch", "batch");
 
   if (varmap.count("help")) {

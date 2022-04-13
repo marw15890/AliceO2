@@ -8,7 +8,7 @@
 # Note that this might require a production server to run.
 #
 # This script can use additional binary objects which can be optionally provided:
-# - matbud.root + ITSdictionary.bin
+# - matbud.root
 #
 # authors: D. Rohr / S. Wenzel
 
@@ -74,7 +74,7 @@ echo "versions,${TAG} alidist=\"${ALIDISTCOMMIT}\",O2=\"${O2COMMIT}\" " > ${METR
 GLOBALDPLOPT="-b" # --monitoring-backend no-op:// is currently removed due to https://alice.its.cern.ch/jira/browse/O2-1887
 
 HBFUTILPARAMS="HBFUtils.nHBFPerTF=${NHBPERTF};HBFUtils.orbitFirst=${RUNFIRSTORBIT};HBFUtils.orbitFirstSampled=${FIRSTSAMPLEDORBIT}"
-[ "0$ALLOW_MULTIPLE_TF" != "01" ] && HBFUTILPARAMS+=";HBFUtils.maxNOrbits=${NHBPERTF};"
+[ "0$ALLOW_MULTIPLE_TF" != "01" ] && HBFUTILPARAMS+=";HBFUtils.maxNOrbits=$((${FIRSTSAMPLEDORBIT} + ${NHBPERTF}));"
 
 ulimit -n 4096 # Make sure we can open sufficiently many files
 [ $? == 0 ] || (echo Failed setting ulimit && exit 1)
@@ -131,6 +131,17 @@ taskwrapper zdcraw.log o2-zdc-digi2raw --file-for cru -o raw/ZDC
 taskwrapper hmpraw.log o2-hmpid-digits-to-raw-workflow --file-for cru --outdir raw/HMP
 taskwrapper trdraw.log o2-trd-trap2raw -o raw/TRD --file-per cru
 taskwrapper ctpraw.log o2-ctp-digi2raw -o raw/CTP --file-for cru
+
+CHECK_DETECTORS_RAW="ITS MFT FT0 FV0 FDD TPC TOF MID MCH CPV ZDC TRD CTP"
+if [ $BEAMTYPE == "PbPb" ] && [ $NEvents -ge 5 ] ; then
+  CHECK_DETECTORS_RAW+=" EMC PHS HMP"
+fi
+for i in $CHECK_DETECTORS_RAW; do
+  if [ `ls -l raw/$i/*.raw | awk '{print $5}' | grep -v "^0\$" | wc -l` == "0" ]; then
+    echo "ERROR: Full system test did generate no raw data for $i"
+    exit 1
+  fi
+done
 
 cat raw/*/*.cfg > rawAll.cfg
 
