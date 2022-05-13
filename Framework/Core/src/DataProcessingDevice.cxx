@@ -23,6 +23,7 @@
 #include "Framework/DispatchPolicy.h"
 #include "Framework/DispatchControl.h"
 #include "Framework/DanglingContext.h"
+#include "Framework/DomainInfoHeader.h"
 #include "Framework/DriverClient.h"
 #include "Framework/EndOfStreamContext.h"
 #include "Framework/FairOptionsRetriever.h"
@@ -39,7 +40,7 @@
 #include "Framework/Monitoring.h"
 #include "PropertyTreeHelpers.h"
 #include "DataProcessingStatus.h"
-#include "DataProcessingHelpers.h"
+#include "Framework/DataProcessingHelpers.h"
 #include "DataRelayerHelpers.h"
 #include "ProcessingPoliciesHelpers.h"
 #include "Headers/DataHeader.h"
@@ -177,7 +178,7 @@ DataProcessingDevice::DataProcessingDevice(RunningDeviceRef ref, ServiceRegistry
   }
 
   /// This should post a message on the queue...
-  SubscribeToNewTransition("dpl", [wakeHandle = mAwakeHandle, deviceContext = &mDeviceContext](fair::mq::Transition t) {
+  SubscribeToNewTransition("dpl", [wakeHandle = mAwakeHandle](fair::mq::Transition t) {
     int res = uv_async_send(wakeHandle);
     if (res < 0) {
       LOG(error) << "Unable to notify subscription";
@@ -363,10 +364,15 @@ void DataProcessingDevice::Init()
   /// Internal channels which will never create an actual message
   /// should be considered as in "Pull" mode, since we do not
   /// expect them to create any data.
+  int validChannelId = 0;
   for (size_t ci = 0; ci < mSpec.inputChannels.size(); ++ci) {
     auto& name = mSpec.inputChannels[ci].name;
     if (name.find(mSpec.channelPrefix + "from_internal-dpl-clock") == 0) {
       mState.inputChannelInfos[ci].state = InputChannelState::Pull;
+      mState.inputChannelInfos[ci].id = {ChannelIndex::INVALID};
+      validChannelId++;
+    } else {
+      mState.inputChannelInfos[ci].id = {validChannelId++};
     }
   }
 
@@ -449,14 +455,20 @@ void DataProcessingDevice::initPollers()
           (channelName.rfind("from_internal-dpl-aod", 0) != 0) &&
           (channelName.rfind("from_internal-dpl-ccdb-backend", 0) != 0) &&
           (channelName.rfind("from_internal-dpl-injected", 0)) != 0) {
-        LOGP(debug, "{} is an internal channel. Skipping as no input will come from there.", channelName);
+        LOGP(detail, "{} is an internal channel. Skipping as no input will come from there.", channelName);
         continue;
       }
       // We only watch receiving sockets.
       if (channelName.rfind("from_" + mSpec.name + "_", 0) == 0) {
-        LOGP(debug, "{} is to send data. Not polling.", channelName);
+        LOGP(detail, "{} is to send data. Not polling.", channelName);
         continue;
       }
+
+      if (channelName.rfind("from_") != 0) {
+        LOGP(detail, "{} is not a DPL socket. Not polling.", channelName);
+        continue;
+      }
+
       // We assume there is always a ZeroMQ socket behind.
       int zmq_fd = 0;
       size_t zmq_fd_len = sizeof(zmq_fd);
@@ -467,7 +479,7 @@ void DataProcessingDevice::initPollers()
         LOG(error) << "Cannot get file descriptor for channel." << channelName;
         continue;
       }
-      LOGP(debug, "Polling socket for {}", channelName);
+      LOGP(detail, "Polling socket for {}", channelName);
       auto* pCtx = (PollerContext*)malloc(sizeof(PollerContext));
       pCtx->name = strdup(channelName.c_str());
       pCtx->loop = mState.loop;
@@ -481,7 +493,7 @@ void DataProcessingDevice::initPollers()
       poller->data = pCtx;
       uv_poll_init(mState.loop, poller, zmq_fd);
       if (channelName.rfind("from_") != 0) {
-        LOGP(debug, "{} is an out of band channel.", channelName);
+        LOGP(detail, "{} is an out of band channel.", channelName);
         mState.activeOutOfBandPollers.push_back(poller);
       } else {
         mState.activeInputPollers.push_back(poller);
@@ -497,11 +509,11 @@ void DataProcessingDevice::initPollers()
       mDeviceContext.exitTransitionTimeout = 0;
       for (auto& [channelName, channel] : fChannels) {
         if (channelName.rfind(mSpec.channelPrefix + "from_internal-dpl", 0) == 0) {
-          LOGP(debug, "{} is an internal channel. Not polling.", channelName);
+          LOGP(detail, "{} is an internal channel. Not polling.", channelName);
           continue;
         }
         if (channelName.rfind(mSpec.channelPrefix + "from_" + mSpec.name + "_", 0) == 0) {
-          LOGP(debug, "{} is an out of band channel. Not polling for output.", channelName);
+          LOGP(detail, "{} is an out of band channel. Not polling for output.", channelName);
           continue;
         }
         // We assume there is always a ZeroMQ socket behind.
@@ -514,7 +526,7 @@ void DataProcessingDevice::initPollers()
           LOGP(error, "Cannot get file descriptor for channel {}", channelName);
           continue;
         }
-        LOG(debug) << "Polling socket for " << channel[0].GetName();
+        LOG(detail) << "Polling socket for " << channel[0].GetName();
         // FIXME: leak
         auto* pCtx = (PollerContext*)malloc(sizeof(PollerContext));
         pCtx->name = strdup(channelName.c_str());
@@ -536,6 +548,7 @@ void DataProcessingDevice::initPollers()
     auto* timer = (uv_timer_t*)malloc(sizeof(uv_timer_t));
     uv_timer_init(mState.loop, timer);
     timer->data = &mState;
+    uv_update_time(mState.loop);
     uv_timer_start(timer, on_idle_timer, 2000, 2000);
     mState.activeTimers.push_back(timer);
   }
@@ -560,12 +573,15 @@ void DataProcessingDevice::startPollers()
 
 void DataProcessingDevice::stopPollers()
 {
+  LOGP(detail, "Stopping {} input pollers", mState.activeInputPollers.size());
   for (auto& poller : mState.activeInputPollers) {
     uv_poll_stop(poller);
   }
+  LOGP(detail, "Stopping {} out of band pollers", mState.activeOutOfBandPollers.size());
   for (auto& poller : mState.activeOutOfBandPollers) {
     uv_poll_stop(poller);
   }
+  LOGP(detail, "Stopping {} output pollers", mState.activeOutOfBandPollers.size());
   for (auto& poller : mState.activeOutputPollers) {
     uv_poll_stop(poller);
   }
@@ -605,17 +621,16 @@ void DataProcessingDevice::InitTask()
   mDeviceContext.exitTransitionTimeout = std::stoi(fConfig->GetValue<std::string>("exit-transition-timeout"));
 
   for (auto& channel : fChannels) {
-    channel.second.at(0).Transport()->SubscribeToRegionEvents([this,
-                                                               &context = mDeviceContext,
+    channel.second.at(0).Transport()->SubscribeToRegionEvents([&context = mDeviceContext,
                                                                &registry = mServiceRegistry,
                                                                &pendingRegionInfos = mPendingRegionInfos,
                                                                &regionInfoMutex = mRegionInfoMutex](FairMQRegionInfo info) {
       std::lock_guard<std::mutex> lock(regionInfoMutex);
-      LOG(debug) << ">>> Region info event" << info.event;
-      LOG(debug) << "id: " << info.id;
-      LOG(debug) << "ptr: " << info.ptr;
-      LOG(debug) << "size: " << info.size;
-      LOG(debug) << "flags: " << info.flags;
+      LOG(detail) << ">>> Region info event" << info.event;
+      LOG(detail) << "id: " << info.id;
+      LOG(detail) << "ptr: " << info.ptr;
+      LOG(detail) << "size: " << info.size;
+      LOG(detail) << "flags: " << info.flags;
       context.expectedRegionCallbacks -= 1;
       pendingRegionInfos.push_back(info);
       // We always want to handle these on the main loop
@@ -774,6 +789,7 @@ void DataProcessingDevice::Run()
         auto timeout = mDeviceContext.exitTransitionTimeout;
         if (timeout != 0 && mState.streaming != StreamingState::Idle) {
           mState.transitionHandling = TransitionHandlingState::Requested;
+          uv_update_time(mState.loop);
           uv_timer_start(mDeviceContext.gracePeriodTimer, on_transition_requested_expired, timeout * 1000, 0);
           if (mProcessingPolicies.termination == TerminationPolicy::QUIT) {
             LOGP(info, "New state requested. Waiting for {} seconds before quitting.", timeout);
@@ -1112,7 +1128,8 @@ void DataProcessingDevice::handleData(DataProcessorContext& context, InputChanne
   enum struct InputType {
     Invalid,
     Data,
-    SourceInfo
+    SourceInfo,
+    DomainInfo
   };
 
   struct InputInfo {
@@ -1125,12 +1142,14 @@ void DataProcessingDevice::handleData(DataProcessorContext& context, InputChanne
     InputType type;
   };
 
+  size_t oldestPossibleTimeslice = (size_t)-1;
+
   // This is how we validate inputs. I.e. we try to enforce the O2 Data model
   // and we do a few stats. We bind parts as a lambda captured variable, rather
   // than an input, because we do not want the outer loop actually be exposed
   // to the implementation details of the messaging layer.
   auto getInputTypes = [&stats = context.registry->get<DataProcessingStats>(),
-                        &info, &context]() -> std::optional<std::vector<InputInfo>> {
+                        &info, &context, &oldestPossibleTimeslice]() -> std::optional<std::vector<InputInfo>> {
     auto& parts = info.parts;
     stats.inputParts = parts.Size();
 
@@ -1148,14 +1167,22 @@ void DataProcessingDevice::handleData(DataProcessorContext& context, InputChanne
     };
 
     for (size_t pi = 0; pi < parts.Size(); pi += 2) {
-      auto sih = o2::header::get<SourceInfoHeader*>(parts.At(pi)->GetData());
+      auto* headerData = parts.At(pi)->GetData();
+      auto sih = o2::header::get<SourceInfoHeader*>(headerData);
       if (sih) {
         info.state = sih->state;
         insertInputInfo(pi, 2, InputType::SourceInfo);
         *context.wasActive = true;
         continue;
       }
-      auto dh = o2::header::get<DataHeader*>(parts.At(pi)->GetData());
+      auto dih = o2::header::get<DomainInfoHeader*>(headerData);
+      if (dih) {
+        oldestPossibleTimeslice = std::min(oldestPossibleTimeslice, dih->oldestPossibleTimeslice);
+        insertInputInfo(pi, 2, InputType::DomainInfo);
+        *context.wasActive = true;
+        continue;
+      }
+      auto dh = o2::header::get<DataHeader*>(headerData);
       if (!dh) {
         insertInputInfo(pi, 0, InputType::Invalid);
         LOGP(error, "Header is not a DataHeader?");
@@ -1167,7 +1194,7 @@ void DataProcessingDevice::handleData(DataProcessorContext& context, InputChanne
         continue;
       }
       TracyPlot("payload size", (int64_t)dh->payloadSize);
-      auto dph = o2::header::get<DataProcessingHeader*>(parts.At(pi)->GetData());
+      auto dph = o2::header::get<DataProcessingHeader*>(headerData);
       TracyAlloc(parts.At(pi + 1)->GetData(), parts.At(pi + 1)->GetSize());
       if (!dph) {
         insertInputInfo(pi, 2, InputType::Invalid);
@@ -1204,7 +1231,7 @@ void DataProcessingDevice::handleData(DataProcessorContext& context, InputChanne
     return results;
   };
 
-  auto reportError = [&registry = *context.registry, &context](const char* message) {
+  auto reportError = [&registry = *context.registry](const char* message) {
     registry.get<DataProcessingStats>().errorCount++;
   };
 
@@ -1239,6 +1266,8 @@ void DataProcessingDevice::handleData(DataProcessorContext& context, InputChanne
             case DataRelayer::Backpressured:
               if (info.normalOpsNotified == true && info.backpressureNotified == false) {
                 LOGP(alarm, "Backpressure on channel {}. Waiting.", info.channel->GetName());
+                auto& monitoring = context.registry->get<o2::monitoring::Monitoring>();
+                monitoring.send(o2::monitoring::Metric{1, fmt::format("backpressure_{}", info.channel->GetName())});
                 info.backpressureNotified = true;
                 info.normalOpsNotified = false;
               }
@@ -1249,6 +1278,8 @@ void DataProcessingDevice::handleData(DataProcessorContext& context, InputChanne
             case DataRelayer::WillRelay:
               if (info.normalOpsNotified == false && info.backpressureNotified == true) {
                 LOGP(info, "Back to normal on channel {}.", info.channel->GetName());
+                auto& monitoring = context.registry->get<o2::monitoring::Monitoring>();
+                monitoring.send(o2::monitoring::Metric{0, fmt::format("backpressure_{}", info.channel->GetName())});
                 info.normalOpsNotified = true;
                 info.backpressureNotified = false;
               }
@@ -1260,7 +1291,6 @@ void DataProcessingDevice::handleData(DataProcessorContext& context, InputChanne
           auto headerIndex = input.position;
           auto payloadIndex = input.position + 1;
           assert(payloadIndex < parts.Size());
-          auto dh = o2::header::get<DataHeader*>(parts.At(headerIndex)->GetData());
           // FIXME: the message with the end of stream cannot contain
           //        split parts.
           parts.At(headerIndex).reset(nullptr);
@@ -1271,13 +1301,22 @@ void DataProcessingDevice::handleData(DataProcessorContext& context, InputChanne
           // pi += dh->splitPayloadParts > 0 ? dh->splitPayloadParts - 1 : 0;
 
         } break;
+        case InputType::DomainInfo: {
+          *context.wasActive = true;
+          auto headerIndex = input.position;
+          auto payloadIndex = input.position + 1;
+          assert(payloadIndex < parts.Size());
+          // FIXME: the message with the end of stream cannot contain
+          //        split parts.
+          parts.At(headerIndex).reset(nullptr);
+          parts.At(payloadIndex).reset(nullptr);
+        }
         case InputType::Invalid: {
           reportError("Invalid part found.");
         } break;
       }
     }
     auto it = std::remove_if(parts.fParts.begin(), parts.fParts.end(), [](auto& msg) -> bool { return msg.get() == nullptr; });
-    auto r = std::distance(it, parts.fParts.end());
     parts.fParts.erase(it, parts.end());
     if (parts.fParts.size()) {
       LOG(debug) << parts.fParts.size() << " messages backpressured";
@@ -1296,6 +1335,16 @@ void DataProcessingDevice::handleData(DataProcessorContext& context, InputChanne
   if (bool(inputTypes) == false) {
     reportError("Parts should come in couples. Dropping it.");
     return;
+  }
+  if (oldestPossibleTimeslice != (size_t)-1) {
+    TimesliceIndex& timesliceIndex = context.registry->get<TimesliceIndex>();
+    auto r = timesliceIndex.setOldestPossibleInput({oldestPossibleTimeslice}, info.id);
+    timesliceIndex.updateOldestPossibleOutput();
+    auto& proxy = context.registry->get<FairMQDeviceProxy>();
+    auto oldestPossibleOutput = context.relayer->getOldestPossibleOutput();
+    LOGP(detail, "Broadcasting possible output {}", oldestPossibleOutput.timeslice.value);
+    context.registry->get<CallbackService>()(CallbackService::Id::DomainInfoUpdated, *(context.registry), (size_t)oldestPossibleOutput.timeslice.value);
+    DataProcessingHelpers::broadcastOldestPossibleTimeslice(proxy, oldestPossibleOutput.timeslice.value);
   }
   handleValidMessages(*inputTypes);
   return;
@@ -1482,6 +1531,7 @@ bool DataProcessingDevice::tryDispatchComputation(DataProcessorContext& context,
   // FIXME: do it in a smarter way than O(N^2)
   auto forwardInputs = [&reportError,
                         &spec = context.deviceContext->spec,
+                        &timesliceIndex = context.registry->get<TimesliceIndex>(),
                         &device = context.deviceContext->device, &currentSetOfInputs](TimesliceSlot slot, InputRecord& record, bool copy, bool consume = true) {
     ZoneScopedN("forward inputs");
     LOGP(debug, "DataProcessingDevice::tryDispatchComputation::forwardInputs");
@@ -1512,9 +1562,14 @@ bool DataProcessingDevice::tryDispatchComputation(DataProcessorContext& context,
         continue;
       }
 
+      auto dih = o2::header::get<DomainInfoHeader*>(input.header);
+      if (dih) {
+        continue;
+      }
+
       auto dh = o2::header::get<DataHeader*>(input.header);
       if (!dh) {
-        reportError("Header is not a DataHeader?");
+        reportError("Forwarding a non-DataHeader?");
         continue;
       }
       auto dph = o2::header::get<DataProcessingHeader*>(input.header);
@@ -1574,8 +1629,6 @@ bool DataProcessingDevice::tryDispatchComputation(DataProcessorContext& context,
           continue;
         }
 
-        auto& forward = spec->forwards[cachedForwardingChoice];
-
         if (copy) {
           auto&& newHeader = header->GetTransport()->CreateMessage();
           newHeader->Copy(*header);
@@ -1598,8 +1651,17 @@ bool DataProcessingDevice::tryDispatchComputation(DataProcessorContext& context,
       if (forwardedParts[fi].Size() == 0) {
         continue;
       }
+      auto& channel = device->GetChannel(spec->forwards[fi].channel, 0);
       // in DPL we are using subchannel 0 only
-      device->Send(forwardedParts[fi], spec->forwards[fi].channel, 0);
+      channel.Send(forwardedParts[fi]);
+
+      // The oldest possible timeslice for a forwarded message
+      // is conservatively the one of the device doing the forwarding.
+      if (spec->forwards[fi].channel.rfind("from_", 0) == 0) {
+        auto oldestTimeslice = timesliceIndex.getOldestPossibleOutput();
+        DataProcessingHelpers::sendOldestPossibleTimeframe(channel, oldestTimeslice.timeslice.value);
+        LOGP(debug, "Forwarding to channel {} oldest possible timeslice {}", spec->forwards[fi].channel, oldestTimeslice.timeslice.value);
+      }
     }
   };
 
@@ -1714,6 +1776,7 @@ bool DataProcessingDevice::tryDispatchComputation(DataProcessorContext& context,
 
         {
           ZoneScopedN("service post processing");
+          context.registry->get<CallbackService>()(CallbackService::Id::PostProcessing, *(context.registry), (int)action.op);
           context.registry->postProcessingCallbacks(processContext);
         }
       }

@@ -24,6 +24,7 @@
 #include "TLatex.h"
 #include "TStyle.h"
 #include "TPaveText.h"
+#include "TPaletteAxis.h"
 
 #include "DataFormatsTPC/Defs.h"
 #include "TPCBase/ROC.h"
@@ -79,6 +80,45 @@ std::vector<painter::PadCoordinates> painter::getPadCoordinatesSector()
   return padCoords;
 }
 
+std::vector<double> painter::getRowBinningCM(uint32_t roc)
+{
+  const Mapper& mapper = Mapper::instance();
+
+  int firstRegion = 0, lastRegion = 10;
+  if (roc < 36) {
+    firstRegion = 0;
+    lastRegion = 4;
+  } else if (roc < 72) {
+    firstRegion = 4;
+    lastRegion = 10;
+  }
+
+  std::vector<double> binning;
+
+  float lastPadHeight = mapper.getPadRegionInfo(firstRegion).getPadHeight();
+  float localX = mapper.getPadRegionInfo(firstRegion).getRadiusFirstRow();
+  binning.emplace_back(localX - 3);
+  binning.emplace_back(localX);
+  for (int iregion = firstRegion; iregion < lastRegion; ++iregion) {
+    const auto& regionInfo = mapper.getPadRegionInfo(iregion);
+    const auto padHeight = regionInfo.getPadHeight();
+
+    if (std::abs(padHeight - lastPadHeight) > 1e-5) {
+      lastPadHeight = padHeight;
+      localX = regionInfo.getRadiusFirstRow();
+      binning.emplace_back(localX);
+    }
+
+    for (int irow = 0; irow < regionInfo.getNumberOfPadRows(); ++irow) {
+      localX += lastPadHeight;
+      binning.emplace_back(localX);
+    }
+  }
+  binning.emplace_back(localX + 3);
+
+  return binning;
+}
+
 std::string painter::getROCTitle(const int rocNumber)
 {
   const std::string_view type = (rocNumber < 36) ? "IROC" : "OROC";
@@ -92,7 +132,7 @@ TCanvas* painter::draw(const CalDet<T>& calDet, int nbins1D, float xMin1D, float
   using DetType = CalDet<T>;
   using CalType = CalArray<T>;
 
-  static const Mapper& mapper = Mapper::instance();
+  const Mapper& mapper = Mapper::instance();
 
   // ===| name and title |======================================================
   std::string title = calDet.getName();
@@ -216,7 +256,7 @@ TCanvas* painter::draw(const CalArray<T>& calArray)
 template <class T>
 void painter::fillHistogram2D(TH2& h2D, const CalDet<T>& calDet, Side side)
 {
-  static const Mapper& mapper = Mapper::instance();
+  const Mapper& mapper = Mapper::instance();
 
   for (ROC roc; !roc.looped(); ++roc) {
     if (roc.side() != side) {
@@ -242,7 +282,7 @@ void painter::fillHistogram2D(TH2& h2D, const CalDet<T>& calDet, Side side)
 template <class T>
 void painter::fillHistogram2D(TH2& h2D, const CalArray<T>& calArray)
 {
-  static const Mapper& mapper = Mapper::instance();
+  const Mapper& mapper = Mapper::instance();
 
   const size_t position = calArray.getPadSubsetNumber();
   const PadSubset padSubset = calArray.getPadSubset();
@@ -283,7 +323,7 @@ TH2* painter::getHistogram2D(const CalDet<T>& calDet, Side side)
 template <class T>
 TH2* painter::getHistogram2D(const CalArray<T>& calArray)
 {
-  static const Mapper& mapper = Mapper::instance();
+  const Mapper& mapper = Mapper::instance();
 
   const size_t position = calArray.getPadSubsetNumber();
   const PadSubset padSubset = calArray.getPadSubset();
@@ -472,7 +512,7 @@ TH2Poly* painter::makeSideHist(Side side)
 template <class T>
 void painter::fillPoly2D(TH2Poly& h2D, const CalDet<T>& calDet, Side side)
 {
-  static const Mapper& mapper = Mapper::instance();
+  const Mapper& mapper = Mapper::instance();
 
   int bin = 1;
   for (const auto& calROC : calDet.getData()) {
@@ -595,7 +635,7 @@ void painter::drawSectorsXY(Side side, int sectorLineColor, int sectorTextColor)
 
 void painter::drawSectorLocalPadNumberPoly(short padTextColor, float lineScalePS)
 {
-  static const Mapper& mapper = Mapper::instance();
+  const Mapper& mapper = Mapper::instance();
   const auto coords = getPadCoordinatesSector();
   TLatex lat;
   lat.SetTextAlign(12);
@@ -619,7 +659,7 @@ void painter::drawSectorLocalPadNumberPoly(short padTextColor, float lineScalePS
 
 void painter::drawSectorInformationPoly(short regionLineColor, short rowTextColor)
 {
-  static const Mapper& mapper = Mapper::instance();
+  const Mapper& mapper = Mapper::instance();
 
   TLatex lat;
   lat.SetTextColor(rowTextColor);
@@ -890,6 +930,16 @@ std::vector<TCanvas*> painter::makeSummaryCanvases(const LtrCalibData& ltr, std:
   vecCanvases.emplace_back(cLtrCoverage);
   vecCanvases.emplace_back(cCalibValues);
   return vecCanvases;
+}
+
+void painter::adjustPalette(TH1* h, float x2ndc, float tickLength)
+{
+  gPad->Modified();
+  gPad->Update();
+  auto palette = (TPaletteAxis*)h->GetListOfFunctions()->FindObject("palette");
+  palette->SetX2NDC(x2ndc);
+  auto ax = h->GetZaxis();
+  ax->SetTickLength(tickLength);
 }
 
 // ===| explicit instantiations |===============================================

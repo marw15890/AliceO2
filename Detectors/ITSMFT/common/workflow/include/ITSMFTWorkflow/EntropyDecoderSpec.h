@@ -55,12 +55,11 @@ class EntropyDecoderSpec : public o2::framework::Task
   bool mUseClusterDictionary{true};
 
   std::string mCTFDictPath{};
-  std::string mClusDictPath{};
   TStopwatch mTimer;
 };
 
 /// create a processor spec
-framework::DataProcessorSpec getEntropyDecoderSpec(o2::header::DataOrigin orig, int verbosity, bool getDigits = false);
+framework::DataProcessorSpec getEntropyDecoderSpec(o2::header::DataOrigin orig, int verbosity, bool getDigits, unsigned int sspec);
 
 } // namespace itsmft
 } // namespace o2

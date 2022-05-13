@@ -18,6 +18,7 @@
 #include "ITSSimulation/Detector.h"
 #include "ITSSimulation/V3Layer.h"
 #include "ITSSimulation/V3Services.h"
+#include "ITSSimulation/V3Cage.h"
 
 #include "SimulationDataFormat/Stack.h"
 #include "SimulationDataFormat/TrackReference.h"
@@ -101,10 +102,10 @@ static void configITS(Detector* its)
     {2.24, 2.34, 2.67, 9., 16.42, 12}, // for each inner layer: rMin,rMid,rMax,NChip/Stave, phi0, nStaves
     {3.01, 3.15, 3.46, 9., 12.18, 16},
     {3.78, 3.93, 4.21, 9., 9.55, 20},
-    {-1, 19.6, -1, 4., 7.5, 24},   // for others: -, rMid, -, NMod/HStave, phi0, nStaves // 24 was 49
-    {-1, 24.55, -1, 4., 6., 30},   // 30 was 61
-    {-1, 34.34, -1, 7., 4.29, 42}, // 42 was 88
-    {-1, 39.30, -1, 7., 3.75, 48}  // 48 was 100
+    {-1, 19.45, -1, 4., 7.5, 24},  // for others: -, rMid, -, NMod/HStave, phi0, nStaves // 24 was 49
+    {-1, 24.40, -1, 4., 6., 30},   // 30 was 61
+    {-1, 34.24, -1, 7., 4.29, 42}, // 42 was 88
+    {-1, 39.20, -1, 7., 3.75, 48}  // 48 was 100
   };
   const int nChipsPerModule = 7;  // For OB: how many chips in a row
   const double zChipGap = 0.01;   // For OB: gap in Z between chips
@@ -117,7 +118,7 @@ static void configITS(Detector* its)
   its->setStaveModelOB(o2::its::Detector::kOBModel2);
 
   const int kNWrapVol = 3;
-  const double wrpRMin[kNWrapVol] = {2.1, 19.3, 33.32};
+  const double wrpRMin[kNWrapVol] = {2.1, 19.2, 33.32};
   const double wrpRMax[kNWrapVol] = {15.4, 29.14, 44.9};
   const double wrpZSpan[kNWrapVol] = {70., 93., 163.6};
 
@@ -510,6 +511,9 @@ void Detector::createMaterials()
   // Rohacell
   o2::base::Detector::Mixture(32, "ROHACELL$", aRohac, zRohac, dRohac, -4, wRohac);
   o2::base::Detector::Medium(32, "ROHACELL$", 32, 0, ifield, fieldm, tmaxfdSi, stemaxSi, deemaxSi, epsilSi, stminSi);
+  // Carbon prepreg (Cage)
+  o2::base::Detector::Material(33, "M46J6K$", 12.0107, 6, 1.84, 999, 999);
+  o2::base::Detector::Medium(33, "M46J6K$", 33, 0, ifield, fieldm, tmaxfdSi, stemaxSi, deemaxSi, epsilSi, stminSi);
 
   // PEEK CF30
   o2::base::Detector::Mixture(19, "PEEKCF30$", aPEEK, zPEEK, dPEEK, -3, wPEEK);
@@ -884,13 +888,17 @@ void Detector::constructDetectorGeometry()
     mGeometry[j]->createLayer(dest);
   }
 
-  // Finally create the services
+  // Now create the services
   mServicesGeometry = new V3Services();
 
   createInnerBarrelServices(wrapVols[0]);
   createMiddlBarrelServices(wrapVols[1]);
   createOuterBarrelServices(wrapVols[2]);
   createOuterBarrelSupports(vITSV);
+
+  // Finally create and place the cage
+  V3Cage* cagePtr = new V3Cage();
+  cagePtr->createAndPlaceCage(vALIC); // vALIC = barrel
 
   delete[] wrapVols; // delete pointer only, not the volumes
 }

@@ -18,10 +18,8 @@
 
 #include "GPUDisplay.h"
 
-#ifdef GPUCA_BUILD_EVENT_DISPLAY
 #include "GPUTPCDef.h"
 
-#include <GL/glu.h>
 #include <vector>
 #include <array>
 #include <tuple>
@@ -93,9 +91,14 @@ static const GPUSettingsDisplay& GPUDisplay_GetConfig(GPUChainTracking* chain)
   }
 }
 
-GPUDisplay::GPUDisplay(GPUDisplayFrontend* frontend, GPUChainTracking* chain, GPUQA* qa, const char* backend, const GPUParam* param, const GPUCalibObjectsConst* calib, const GPUSettingsDisplay* config) : mFrontend(frontend), mChain(chain), mConfig(config ? *config : GPUDisplay_GetConfig(chain)), mQA(qa)
+GPUDisplay::GPUDisplay(GPUDisplayFrontend* frontend, GPUChainTracking* chain, GPUQA* qa, const GPUParam* param, const GPUCalibObjectsConst* calib, const GPUSettingsDisplay* config) : GPUDisplayInterface(), mFrontend(frontend), mChain(chain), mConfig(config ? *config : GPUDisplay_GetConfig(chain)), mQA(qa)
 {
-  mBackend.reset(GPUDisplayBackend::getBackend(backend));
+  mParam = param ? param : &mChain->GetParam();
+  mCalib = calib;
+  mCfgL = mConfig.light;
+  mCfgH = mConfig.heavy;
+  mCfgR = mConfig.renderer;
+  mBackend.reset(GPUDisplayBackend::getBackend(mConfig.displayRenderer.c_str()));
   if (!mBackend) {
     throw std::runtime_error("Error obtaining display backend");
   }
@@ -103,14 +106,9 @@ GPUDisplay::GPUDisplay(GPUDisplayFrontend* frontend, GPUChainTracking* chain, GP
   frontend->mDisplay = this;
   frontend->mBackend = mBackend.get();
   mCfgR.openGLCore = mBackend->CoreProfile();
-  mParam = param ? param : &mChain->GetParam();
-  mCalib = calib;
-  mCfgL = mConfig.light;
-  mCfgH = mConfig.heavy;
-  mCfgR = mConfig.renderer;
 }
 
-inline const GPUTRDGeometry& GPUDisplay::trdGeometry() { return *(GPUTRDGeometry*)mCalib->trdGeometry; }
+inline const GPUTRDGeometry* GPUDisplay::trdGeometry() { return (GPUTRDGeometry*)mCalib->trdGeometry; }
 const GPUTPCTracker& GPUDisplay::sliceTracker(int iSlice) { return mChain->GetTPCSliceTrackers()[iSlice]; }
 const GPUTRDTrackerGPU& GPUDisplay::trdTracker() { return *mChain->GetTRDTrackerGPU(); }
 inline int GPUDisplay::getNumThreads()
@@ -507,7 +505,13 @@ int GPUDisplay::InitDisplay_internal()
   }
   mYFactor = mBackend->getYFactor();
   mDrawTextInCompatMode = !mBackend->mFreetypeInitialized && mFrontend->mCanDrawText == 1;
-  ResizeScene(GPUDisplayFrontend::INIT_WIDTH, GPUDisplayFrontend::INIT_HEIGHT, true);
+  int height = 0, width = 0;
+  mFrontend->getSize(width, height);
+  if (height == 0 || width == 0) {
+    width = GPUDisplayFrontend::INIT_WIDTH;
+    height = GPUDisplayFrontend::INIT_HEIGHT;
+  }
+  ResizeScene(width, height, true);
   return 0;
 }
 
@@ -531,7 +535,7 @@ GPUDisplay::vboList GPUDisplay::DrawSpacePointsTRD(int iSlice, int select, int i
 
   if (iCol == 0) {
     for (unsigned int i = 0; i < mIOPtrs->nTRDTracklets; i++) {
-      int iSec = trdGeometry().GetSector(mIOPtrs->trdTracklets[i].GetDetector());
+      int iSec = trdGeometry()->GetSector(mIOPtrs->trdTracklets[i].GetDetector());
       bool draw = iSlice == iSec && mGlobalPosTRD[i].w == select;
       if (draw) {
         mVertexBuffer[iSlice].emplace_back(mGlobalPosTRD[i].x, mGlobalPosTRD[i].y * mYFactor, mCfgH.projectXY ? 0 : mGlobalPosTRD[i].z);
@@ -1124,7 +1128,7 @@ GPUDisplay::vboList GPUDisplay::DrawGridTRD(int sector)
   size_t startCount = mVertexBufferStart[sector].size();
   size_t startCountInner = mVertexBuffer[sector].size();
 #ifdef GPUCA_HAVE_O2HEADERS
-  auto* geo = &trdGeometry();
+  auto* geo = trdGeometry();
   if (geo) {
     int trdsector = NSLICES / 2 - 1 - sector;
     float alpha = geo->GetAlpha() / 2.f + geo->GetAlpha() * trdsector;
@@ -1314,7 +1318,7 @@ void GPUDisplay::DrawGLScene_updateEventData()
         row = cl.row;
       } else {
         cid = mIOPtrs->clustersNative->clusterOffset[iSlice][0] + i;
-        while (row < GPUCA_ROW_COUNT && mIOPtrs->clustersNative->clusterOffset[iSlice][row + 1] <= (unsigned int)cid) {
+        while (row < GPUCA_ROW_COUNT - 1 && mIOPtrs->clustersNative->clusterOffset[iSlice][row + 1] <= (unsigned int)cid) {
           row++;
         }
       }
@@ -1356,7 +1360,7 @@ void GPUDisplay::DrawGLScene_updateEventData()
       trdZoffset = fabsf(mCalib->fastTransform->convVertexTimeToZOffset(0, trdTime, mParam->par.continuousMaxTimeBin));
     }
     const auto& sp = mIOPtrs->trdSpacePoints[i];
-    int iSec = trdGeometry().GetSector(mIOPtrs->trdTracklets[i].GetDetector());
+    int iSec = trdGeometry()->GetSector(mIOPtrs->trdTracklets[i].GetDetector());
     float4* ptr = &mGlobalPosTRD[i];
     mParam->Slice2Global(iSec, sp.getX() + mCfgH.xAdd, sp.getY(), sp.getZ(), &ptr->x, &ptr->y, &ptr->z);
     ptr->z += ptr->z > 0 ? trdZoffset : -trdZoffset;
@@ -1467,7 +1471,6 @@ void GPUDisplay::DrawGLScene_cameraAndAnimation(float animateTime, float& mixSla
   }
   scalefactor *= sqrdist;
 
-  mixSlaveImage = 0.f;
   float time = animateTime;
   if (mAnimate && time < 0) {
     if (mAnimateScreenshot) {
@@ -1477,14 +1480,14 @@ void GPUDisplay::DrawGLScene_cameraAndAnimation(float animateTime, float& mixSla
     }
 
     float maxTime = mAnimateVectors[0].back();
-    mAnimationFrame++;
     if (time >= maxTime) {
       time = maxTime;
-      mAnimate = 0;
+      mAnimate = mAnimateScreenshot = 0;
       SetInfo("Animation finished. (%1.2f seconds, %d frames)", time, mAnimationFrame);
     } else {
       SetInfo("Running mAnimation: time %1.2f/%1.2f, frames %d", time, maxTime, mAnimationFrame);
     }
+    mAnimationFrame++;
   }
   // Perform new rotation / translation
   if (mAnimate) {
@@ -1503,12 +1506,12 @@ void GPUDisplay::DrawGLScene_cameraAndAnimation(float animateTime, float& mixSla
       }
 
       if (base != mAnimationLastBase && mAnimateVectors[0][mAnimationLastBase] != mAnimateVectors[0][base] && memcmp(&mAnimateConfig[base], &mAnimateConfig[mAnimationLastBase], sizeof(mAnimateConfig[base]))) {
-        mCfgL = mAnimateConfig[mAnimationLastBase];
-        updateConfig();
-        mBackend->mRenderToMixBuffer = true;
-        DrawGLScene_internal(time);
-        mBackend->mRenderToMixBuffer = false;
         mixSlaveImage = 1.f - (time - mAnimateVectors[0][mAnimationLastBase]) / (mAnimateVectors[0][base] - mAnimateVectors[0][mAnimationLastBase]);
+        if (mixSlaveImage > 0) {
+          mCfgL = mAnimateConfig[mAnimationLastBase];
+          updateConfig();
+          DrawGLScene_internal(time, true);
+        }
       }
 
       if (memcmp(&mAnimateConfig[base], &mCfgL, sizeof(mCfgL))) {
@@ -1573,26 +1576,26 @@ void GPUDisplay::DrawGLScene_cameraAndAnimation(float animateTime, float& mixSla
 
     mResetScene = 0;
   } else {
-    float moveZ = scalefactor * ((float)mMouseWheelTmp / 150 + (float)(mFrontend->mKeys['W'] - mFrontend->mKeys['S']) * (!mFrontend->mKeys[mFrontend->KEY_SHIFT]) * 0.2 * mFPSScale);
+    float moveZ = scalefactor * ((float)mMouseWheelTmp / 150 + (float)(mFrontend->mKeys[(unsigned char)'W'] - mFrontend->mKeys[(unsigned char)'S']) * (!mFrontend->mKeys[mFrontend->KEY_SHIFT]) * 0.2 * mFPSScale);
     float moveY = scalefactor * ((float)(mFrontend->mKeys[mFrontend->KEY_PAGEDOWN] - mFrontend->mKeys[mFrontend->KEY_PAGEUP]) * 0.2 * mFPSScale);
-    float moveX = scalefactor * ((float)(mFrontend->mKeys['A'] - mFrontend->mKeys['D']) * (!mFrontend->mKeys[mFrontend->KEY_SHIFT]) * 0.2 * mFPSScale);
-    float rotRoll = rotatescalefactor * mFPSScale * 2 * (mFrontend->mKeys['E'] - mFrontend->mKeys['F']) * (!mFrontend->mKeys[mFrontend->KEY_SHIFT]);
+    float moveX = scalefactor * ((float)(mFrontend->mKeys[(unsigned char)'A'] - mFrontend->mKeys[(unsigned char)'D']) * (!mFrontend->mKeys[mFrontend->KEY_SHIFT]) * 0.2 * mFPSScale);
+    float rotRoll = rotatescalefactor * mFPSScale * 2 * (mFrontend->mKeys[(unsigned char)'E'] - mFrontend->mKeys[(unsigned char)'F']) * (!mFrontend->mKeys[mFrontend->KEY_SHIFT]);
     float rotYaw = rotatescalefactor * mFPSScale * 2 * (mFrontend->mKeys[mFrontend->KEY_RIGHT] - mFrontend->mKeys[mFrontend->KEY_LEFT]);
     float rotPitch = rotatescalefactor * mFPSScale * 2 * (mFrontend->mKeys[mFrontend->KEY_DOWN] - mFrontend->mKeys[mFrontend->KEY_UP]);
 
     float mouseScale = 1920.f / std::max<float>(1920.f, mBackend->mScreenWidth);
     if (mFrontend->mMouseDnR && mFrontend->mMouseDn) {
-      moveZ += -scalefactor * mouseScale * ((float)mFrontend->mouseMvY - (float)mFrontend->mMouseDnY) / 4;
-      rotRoll += -rotatescalefactor * mouseScale * ((float)mFrontend->mouseMvX - (float)mFrontend->mMouseDnX);
+      moveZ += -scalefactor * mouseScale * ((float)mFrontend->mMouseMvY - (float)mFrontend->mMouseDnY) / 4;
+      rotRoll += -rotatescalefactor * mouseScale * ((float)mFrontend->mMouseMvX - (float)mFrontend->mMouseDnX);
     } else if (mFrontend->mMouseDnR) {
-      moveX += scalefactor * 0.5 * mouseScale * ((float)mFrontend->mMouseDnX - (float)mFrontend->mouseMvX) / 4;
-      moveY += scalefactor * 0.5 * mouseScale * ((float)mFrontend->mouseMvY - (float)mFrontend->mMouseDnY) / 4;
+      moveX += scalefactor * 0.5 * mouseScale * ((float)mFrontend->mMouseDnX - (float)mFrontend->mMouseMvX) / 4;
+      moveY += scalefactor * 0.5 * mouseScale * ((float)mFrontend->mMouseMvY - (float)mFrontend->mMouseDnY) / 4;
     } else if (mFrontend->mMouseDn) {
-      rotYaw += rotatescalefactor * mouseScale * ((float)mFrontend->mouseMvX - (float)mFrontend->mMouseDnX);
-      rotPitch += rotatescalefactor * mouseScale * ((float)mFrontend->mouseMvY - (float)mFrontend->mMouseDnY);
+      rotYaw += rotatescalefactor * mouseScale * ((float)mFrontend->mMouseMvX - (float)mFrontend->mMouseDnX);
+      rotPitch += rotatescalefactor * mouseScale * ((float)mFrontend->mMouseMvY - (float)mFrontend->mMouseDnY);
     }
 
-    if (mFrontend->mKeys['<'] && !mFrontend->mKeysShift['<']) {
+    if (mFrontend->mKeys[(unsigned char)'<'] && !mFrontend->mKeysShift[(unsigned char)'<']) {
       mAnimationDelay += moveX;
       if (mAnimationDelay < 0.05) {
         mAnimationDelay = 0.05;
@@ -1682,7 +1685,7 @@ void GPUDisplay::DrawGLScene_cameraAndAnimation(float animateTime, float& mixSla
 
     // Graphichs Options
     float minSize = 0.4 / (mCfgR.drawQualityDownsampleFSAA > 1 ? mCfgR.drawQualityDownsampleFSAA : 1);
-    int deltaLine = mFrontend->mKeys['+'] * mFrontend->mKeysShift['+'] - mFrontend->mKeys['-'] * mFrontend->mKeysShift['-'];
+    int deltaLine = mFrontend->mKeys[(unsigned char)'+'] * mFrontend->mKeysShift[(unsigned char)'+'] - mFrontend->mKeys[(unsigned char)'-'] * mFrontend->mKeysShift[(unsigned char)'-'];
     mCfgL.lineWidth += (float)deltaLine * mFPSScale * 0.02 * mCfgL.lineWidth;
     if (mCfgL.lineWidth < minSize) {
       mCfgL.lineWidth = minSize;
@@ -1692,7 +1695,7 @@ void GPUDisplay::DrawGLScene_cameraAndAnimation(float animateTime, float& mixSla
       mUpdateDrawCommands = 1;
     }
     minSize *= 2;
-    int deltaPoint = mFrontend->mKeys['+'] * (!mFrontend->mKeysShift['+']) - mFrontend->mKeys['-'] * (!mFrontend->mKeysShift['-']);
+    int deltaPoint = mFrontend->mKeys[(unsigned char)'+'] * (!mFrontend->mKeysShift[(unsigned char)'+']) - mFrontend->mKeys[(unsigned char)'-'] * (!mFrontend->mKeysShift[(unsigned char)'-']);
     mCfgL.pointSize += (float)deltaPoint * mFPSScale * 0.02 * mCfgL.pointSize;
     if (mCfgL.pointSize < minSize) {
       mCfgL.pointSize = minSize;
@@ -1710,8 +1713,8 @@ void GPUDisplay::DrawGLScene_cameraAndAnimation(float animateTime, float& mixSla
   }
 
   if (mFrontend->mMouseDn || mFrontend->mMouseDnR) {
-    mFrontend->mMouseDnX = mFrontend->mouseMvX;
-    mFrontend->mMouseDnY = mFrontend->mouseMvY;
+    mFrontend->mMouseDnX = mFrontend->mMouseMvX;
+    mFrontend->mMouseDnY = mFrontend->mMouseMvY;
   }
 }
 
@@ -2137,9 +2140,10 @@ void GPUDisplay::DrawGLScene_drawCommands()
   }
 }
 
-void GPUDisplay::DrawGLScene_internal(float animateTime) // negative time = no mixing
+void GPUDisplay::DrawGLScene_internal(float animateTime, bool renderToMixBuffer) // negative time = no mixing
 {
   bool showTimer = false;
+  bool doScreenshot = (mRequestScreenshot || mAnimateScreenshot) && animateTime < 0;
 
   if (animateTime < 0 && (mUpdateEventData || mResetScene || mUpdateVertexLists) && mIOPtrs) {
     disableUnsupportedOptions();
@@ -2173,8 +2177,8 @@ void GPUDisplay::DrawGLScene_internal(float animateTime) // negative time = no m
   // Draw Event
   nextViewMatrix = nextViewMatrix * mModelMatrix;
   const float zFar = ((mParam->par.continuousTracking ? (mMaxClusterZ / GL_SCALE_FACTOR) : 8.f) + 50.f) * 2.f;
-  const hmm_mat4 proj = HMM_Perspective(mCfgR.fov, (GLfloat)mBackend->mRenderWidth / (GLfloat)mBackend->mRenderHeight, 0.1f, zFar);
-  mBackend->prepareDraw(proj, nextViewMatrix, mRequestScreenshot);
+  const hmm_mat4 proj = HMM_Perspective(mCfgR.fov, (float)mBackend->mRenderWidth / (float)mBackend->mRenderHeight, 0.1f, zFar);
+  mBackend->prepareDraw(proj, nextViewMatrix, doScreenshot || mRequestScreenshot, renderToMixBuffer, mixSlaveImage);
   mBackend->pointSizeFactor(1);
   mBackend->lineWidthFactor(1);
 
@@ -2184,13 +2188,7 @@ void GPUDisplay::DrawGLScene_internal(float animateTime) // negative time = no m
   }
 
   mUpdateDrawCommands = mUpdateRenderPipeline = 0;
-  mBackend->finishDraw(mRequestScreenshot, mixSlaveImage);
-
-  if (mAnimate && mAnimateScreenshot && animateTime < 0) {
-    char mAnimateScreenshotFile[48];
-    sprintf(mAnimateScreenshotFile, "mAnimation%d_%05d.bmp", mAnimationExport, mAnimationFrame);
-    // DoScreenshot(mAnimateScreenshotFile, time);
-  }
+  mBackend->finishDraw(doScreenshot, renderToMixBuffer, mixSlaveImage);
 
   if (animateTime < 0) {
     mFramesDone++;
@@ -2219,11 +2217,15 @@ void GPUDisplay::DrawGLScene_internal(float animateTime) // negative time = no m
     }
   }
 
-  mBackend->finishFrame(mRequestScreenshot);
-  if (mRequestScreenshot) {
+  mBackend->finishFrame(mRequestScreenshot, renderToMixBuffer, mixSlaveImage);
+  if (doScreenshot) {
     mRequestScreenshot = false;
     std::vector<char> pixels = mBackend->getPixels();
-    DoScreenshot(mScreenshotFile.c_str(), pixels);
+    char tmpFileName[48];
+    if (mAnimateScreenshot) {
+      sprintf(tmpFileName, "mAnimation%d_%05d.bmp", mAnimationExport, mAnimationFrame);
+    }
+    DoScreenshot(mAnimateScreenshot ? tmpFileName : mScreenshotFile.c_str(), pixels);
   }
 }
 
@@ -2330,5 +2332,3 @@ void GPUDisplay::OpenGLPrint(const char* s, float x, float y, float r, float g, 
     mFrontend->OpenGLPrint(s, x, y, r, g, b, a, fromBotton);
   }
 }
-
-#endif
