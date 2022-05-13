@@ -123,8 +123,16 @@ std::unique_ptr<FairMQMessage> FairMQDeviceProxy::createInputMessage(RouteIndex 
   return getInputTransport(routeIndex)->CreateMessage(size, fair::mq::Alignment{64});
 }
 
-void FairMQDeviceProxy::bindRoutes(std::vector<OutputRoute> const& outputs, std::vector<InputRoute> const& inputs, fair::mq::Device& device)
+void FairMQDeviceProxy::bind(std::vector<OutputRoute> const& outputs, std::vector<InputRoute> const& inputs, fair::mq::Device& device)
 {
+  mOutputs.clear();
+  mOutputRoutes.clear();
+  mOutputChannels.clear();
+  mOutputChannelNames.clear();
+  mInputs.clear();
+  mInputRoutes.clear();
+  mInputChannels.clear();
+  mInputChannelNames.clear();
   {
     mOutputs = outputs;
     mOutputRoutes.reserve(outputs.size());
@@ -191,5 +199,6 @@ void FairMQDeviceProxy::bindRoutes(std::vector<OutputRoute> const& outputs, std:
     LOGP(debug, "Total input channels found {}, total routes {}", mInputChannels.size(), mInputRoutes.size());
     assert(mInputRoutes.size() == inputs.size());
   }
+  mStateChangeCallback = [&device]() -> bool { return device.NewStatePending(); };
 }
 } // namespace o2::framework

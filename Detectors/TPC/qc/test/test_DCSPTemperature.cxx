@@ -9,18 +9,15 @@
 // granted to it by virtue of its status as an Intergovernmental Organization
 // or submit itself to any jurisdiction.
 
-#ifndef O2_MUON_COMMON_ALIASFIXER_H
-#define O2_MUON_COMMON_ALIASFIXER_H
+#define BOOST_TEST_MODULE Test TPC QC
+#define BOOST_TEST_MAIN
+#define BOOST_TEST_DYN_LINK
+#include <boost/test/unit_test.hpp>
+#include "DataFormatsTPC/Defs.h"
+#include "TPCQC/DCSPTemperature.h"
+#include <cmath>
 
-#include <string>
-
-namespace o2::muon
+BOOST_AUTO_TEST_CASE(ReadWriteROOTFile)
 {
-/** For some reason linked to ADAPOS (or underlying ORACLE ?)
-  * datapoints we get from there cannot contain the dot character,
-  * so we replace it by an underscore.
-  */
-std::string replaceDotByUnderscore(const std::string& alias);
-}; // namespace o2::muon
-
-#endif
+  o2::tpc::qc::DCSPTemperature temp;
+}

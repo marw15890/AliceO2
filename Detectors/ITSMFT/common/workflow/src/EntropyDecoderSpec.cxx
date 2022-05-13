@@ -82,10 +82,10 @@ void EntropyDecoderSpec::endOfStream(EndOfStreamContext& ec)
 void EntropyDecoderSpec::updateTimeDependentParams(ProcessingContext& pc)
 {
   if (mMaskNoise) {
-    mNoiseMap = pc.inputs().get<o2::itsmft::NoiseMap*>("noise").get();
+    pc.inputs().get<o2::itsmft::NoiseMap*>("noise").get();
   }
   if (mGetDigits || mMaskNoise) {
-    pc.inputs().get<o2::itsmft::NoiseMap*>("cldict");
+    pc.inputs().get<o2::itsmft::TopologyDictionary*>("cldict");
   }
   mCTFCoder.updateTimeDependentParams(pc);
 }
@@ -93,6 +93,7 @@ void EntropyDecoderSpec::updateTimeDependentParams(ProcessingContext& pc)
 void EntropyDecoderSpec::finaliseCCDB(o2::framework::ConcreteDataMatcher& matcher, void* obj)
 {
   if (matcher == ConcreteDataMatcher(mOrigin, "NOISEMAP", 0)) {
+    mNoiseMap = (o2::itsmft::NoiseMap*)obj;
     LOG(info) << mOrigin.as<std::string>() << " noise map updated";
     return;
   }
@@ -129,7 +130,7 @@ DataProcessorSpec getEntropyDecoderSpec(o2::header::DataOrigin orig, int verbosi
     outputs,
     AlgorithmSpec{adaptFromTask<EntropyDecoderSpec>(orig, verbosity, getDigits)},
     Options{
-      {"ctf-dict", VariantType::String, "", {"CTF dictionary: empty=CCDB, none=no external dictionary otherwise: local filename"}},
+      {"ctf-dict", VariantType::String, "ccdb", {"CTF dictionary: empty or ccdb=CCDB, none=no external dictionary otherwise: local filename"}},
       {"mask-noise", VariantType::Bool, false, {"apply noise mask to digits or clusters (involves reclusterization)"}},
       {"ignore-cluster-dictionary", VariantType::Bool, false, {"do not use cluster dictionary, always store explicit patterns"}}}};
 }

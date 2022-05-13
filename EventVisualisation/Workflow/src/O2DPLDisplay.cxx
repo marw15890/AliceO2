@@ -47,15 +47,18 @@ void customize(std::vector<ConfigParamSpec>& workflowOptions)
     {"number-of_files", VariantType::Int, 300, {"maximum number of json files in folder"}},
     {"number-of_tracks", VariantType::Int, -1, {"maximum number of track stored in json file (-1 means no limit)"}},
     {"time-interval", VariantType::Int, 5000, {"time interval in milliseconds between stored files"}},
-    {"enable-mc", o2::framework::VariantType::Bool, false, {"enable visualization of MC data"}},
-    {"disable-mc", o2::framework::VariantType::Bool, false, {"disable visualization of MC data"}}, // for compatibility, overrides enable-mc
+    {"disable-mc", VariantType::Bool, false, {"disable visualization of MC data"}},
     {"display-clusters", VariantType::String, "ITS,TPC,TRD,TOF", {"comma-separated list of clusters to display"}},
     {"display-tracks", VariantType::String, "TPC,ITS,ITS-TPC,TPC-TRD,ITS-TPC-TRD,TPC-TOF,ITS-TPC-TOF", {"comma-separated list of tracks to display"}},
-    {"read-from-files", o2::framework::VariantType::Bool, false, {"comma-separated list of tracks to display"}},
-    {"disable-root-input", o2::framework::VariantType::Bool, false, {"Disable root input overriding read-from-files"}},
-    {"configKeyValues", VariantType::String, "", {"Semicolon separated key=value strings ..."}},
-    {"skipOnEmptyInput", o2::framework::VariantType::Bool, false, {"Just don't run the ED when no input is provided"}},
-    {"no-empty-output", o2::framework::VariantType::Bool, false, {"don't create files with no tracks/clusters"}}};
+    {"disable-root-input", VariantType::Bool, false, {"disable root-files input reader"}},
+    {"configKeyValues", VariantType::String, "", {"semicolon separated key=value strings ..."}},
+    {"skipOnEmptyInput", VariantType::Bool, false, {"don't run the ED when no input is provided"}},
+    {"min-its-tracks", VariantType::Int, -1, {"don't create file if less than the specified number of ITS tracks is present"}},
+    {"min-tracks", VariantType::Int, -1, {"don't create file if less than the specified number of all tracks is present"}},
+    {"filter-its-rof", VariantType::Bool, false, {"don't display tracks outside ITS readout frame"}},
+    {"filter-time-min", VariantType::Float, -1.f, {"display tracks only in [min, max] microseconds time range in each time frame, requires --filter-time-max to be specified as well"}},
+    {"filter-time-max", VariantType::Float, -1.f, {"display tracks only in [min, max] microseconds time range in each time frame, requires --filter-time-min to be specified as well"}},
+  };
 
   std::swap(workflowOptions, options);
 }
@@ -78,13 +81,28 @@ void O2DPLDisplaySpec::run(ProcessingContext& pc)
   // filtering out any run which occur before reaching next time interval
   auto currentTime = std::chrono::high_resolution_clock::now();
   std::chrono::duration<double> elapsed = currentTime - this->mTimeStamp;
-  if (elapsed < this->mTimeInteval) {
+  if (elapsed < this->mTimeInterval) {
     return; // skip this run - it is too often
   }
   this->mTimeStamp = currentTime;
   updateTimeDependentParams(pc);
 
-  EveWorkflowHelper helper;
+  EveWorkflowHelper::FilterSet enabledFilters;
+
+  if (this->mFilterITSROF) {
+    enabledFilters.set(EveWorkflowHelper::Filter::ITSROF);
+  }
+
+  if (this->mFilterTime) {
+    enabledFilters.set(EveWorkflowHelper::Filter::TimeBracket);
+  }
+
+  if (this->mNumberOfTracks != -1) {
+    enabledFilters.set(EveWorkflowHelper::Filter::TotalNTracks);
+  }
+
+  EveWorkflowHelper helper(enabledFilters, this->mNumberOfTracks, this->mTimeBracket);
+
   helper.getRecoContainer().collectData(pc, *mDataRequest);
   helper.selectTracks(&(mData.mConfig->configCalib), mClMask, mTrkMask, mTrkMask);
 
@@ -95,9 +113,24 @@ void O2DPLDisplaySpec::run(ProcessingContext& pc)
   const auto* dh = DataRefUtils::getHeader<o2::header::DataHeader*>(ref);
   const auto* dph = DataRefUtils::getHeader<DataProcessingHeader*>(ref);
 
-  helper.draw(this->mNumberOfTracks);
+  helper.draw();
 
-  if (!(this->mNoEmptyOutput && helper.isEmpty())) {
+  bool save = true;
+
+  if (this->mMinITSTracks != -1 && helper.getITSTrackCount() < this->mMinITSTracks) {
+    save = false;
+  }
+
+  if (this->mMinTracks != -1 && helper.getTrackCount() < this->mMinTracks) {
+    save = false;
+  }
+
+  if (save) {
+    helper.mEvent.setClMask(this->mClMask.to_ulong());
+    helper.mEvent.setTrkMask(this->mTrkMask.to_ulong());
+    helper.mEvent.setRunNumber(dh->runNumber);
+    helper.mEvent.setTfCounter(dh->tfCounter);
+    helper.mEvent.setFirstTForbit(dh->firstTForbit);
     helper.save(this->mJsonPath, this->mNumberOfFiles, this->mTrkMask, this->mClMask, this->mWorkflowVersion, dh->runNumber, dph->creation);
   }
 
@@ -136,7 +169,7 @@ WorkflowSpec defineDataProcessing(ConfigContext const& cfgc)
   std::string jsonFolder = cfgc.options().get<std::string>("jsons-folder");
   std::string eveHostName = cfgc.options().get<std::string>("eve-hostname");
   o2::conf::ConfigurableParam::updateFromString(cfgc.options().get<std::string>("configKeyValues"));
-  bool useMC = cfgc.options().get<bool>("enable-mc") && !cfgc.options().get<bool>("disable-mc");
+  bool useMC = !cfgc.options().get<bool>("disable-mc");
 
   char hostname[_POSIX_HOST_NAME_MAX];
   gethostname(hostname, _POSIX_HOST_NAME_MAX);
@@ -170,21 +203,42 @@ WorkflowSpec defineDataProcessing(ConfigContext const& cfgc)
     }
     throw std::runtime_error("No input configured");
   }
+
+  bool filterTime;
+  EveWorkflowHelper::TBracket timeBracket{cfgc.options().get<float>("filter-time-min"), cfgc.options().get<float>("filter-time-max")};
+
+  if (timeBracket.getMin() < 0 && timeBracket.getMax() < 0) {
+    filterTime = false;
+  } else if (timeBracket.getMin() >= 0 && timeBracket.getMax() >= 0) {
+    filterTime = true;
+
+    if (timeBracket.isInvalid()) {
+      throw std::runtime_error("Filter time bracket is invalid");
+    }
+  } else {
+    throw std::runtime_error("Both filter times, min and max, have to be specified at the same time");
+  }
+
   std::shared_ptr<DataRequest> dataRequest = std::make_shared<DataRequest>();
   dataRequest->requestTracks(srcTrk, useMC);
   dataRequest->requestClusters(srcCl, useMC);
 
-  if (cfgc.options().get<bool>("read-from-files")) {
-    InputHelper::addInputSpecs(cfgc, specs, srcCl, srcTrk, srcTrk, useMC);
+  auto filterITSROF = cfgc.options().get<bool>("filter-its-rof");
+
+  if (filterITSROF) {
+    dataRequest->requestIRFramesITS();
   }
 
-  auto noEmptyFiles = cfgc.options().get<bool>("no-empty-output");
+  InputHelper::addInputSpecs(cfgc, specs, srcCl, srcTrk, srcTrk, useMC);
+
+  auto minITSTracks = cfgc.options().get<int>("min-its-tracks");
+  auto minTracks = cfgc.options().get<int>("min-tracks");
 
   specs.emplace_back(DataProcessorSpec{
     "o2-eve-display",
     dataRequest->inputs,
     {},
-    AlgorithmSpec{adaptFromTask<O2DPLDisplaySpec>(useMC, srcTrk, srcCl, dataRequest, jsonFolder, timeInterval, numberOfFiles, numberOfTracks, eveHostNameMatch, noEmptyFiles)}});
+    AlgorithmSpec{adaptFromTask<O2DPLDisplaySpec>(useMC, srcTrk, srcCl, dataRequest, jsonFolder, timeInterval, numberOfFiles, numberOfTracks, eveHostNameMatch, minITSTracks, minTracks, filterITSROF, filterTime, timeBracket)}});
 
   return std::move(specs);
 }

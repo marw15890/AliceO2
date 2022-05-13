@@ -76,7 +76,7 @@ Detector::Detector(Bool_t active)
       LOG(error) << "FastSim module disabled.";
     } else {
       mClassifierScaler.setScales(eonScales->first, eonScales->second);
-      mFastSimClassifier = new o2::zdc::fastsim::ConditionalModelSimulation(o2::zdc::ZDCSimParam::Instance().ZDCFastSimClassifierPath);
+      mFastSimClassifier = new o2::zdc::fastsim::ConditionalModelSimulation(o2::zdc::ZDCSimParam::Instance().ZDCFastSimClassifierPath, 1);
 
       if (o2::zdc::ZDCSimParam::Instance().useZDCFastSim && !o2::zdc::ZDCSimParam::Instance().ZDCFastSimModelPath.empty() && !o2::zdc::ZDCSimParam::Instance().ZDCFastSimModelScales.empty()) {
         auto modelScales = o2::zdc::fastsim::loadScales(o2::zdc::ZDCSimParam::Instance().ZDCFastSimModelScales);
@@ -87,8 +87,7 @@ Detector::Detector(Bool_t active)
           LOG(error) << "FastSim module disabled";
         } else {
           mModelScaler.setScales(modelScales->first, modelScales->second);
-          mFastSimModel = new o2::zdc::fastsim::ConditionalModelSimulation(o2::zdc::ZDCSimParam::Instance().ZDCFastSimModelPath);
-          mNoise = o2::zdc::fastsim::normal_distribution(0.0, 1.0, 10);
+          mFastSimModel = new o2::zdc::fastsim::ConditionalModelSimulation(o2::zdc::ZDCSimParam::Instance().ZDCFastSimModelPath, 1);
           LOG(info) << "\n FastSim module enabled";
         }
       }
@@ -316,6 +315,11 @@ void Detector::resetHitIndices()
 void Detector::flushSpatialResponse()
 {
   if (o2::zdc::ZDCSimParam::Instance().recordSpatialResponse) {
+    auto c = mNeutronResponseImage.getPhotonsPerChannel();
+    std::fstream output("o2sim-FullSimResult", std::fstream::out | std::fstream::app);
+    output << c[0] << " " << c[1] << " " << c[2] << " " << c[3] << " " << c[4] << "\n";
+    output.close();
+
     // only write non-trivial image pairs
     if (mNeutronResponseImage.getPhotonSum() > 0 || mProtonResponseImage.getPhotonSum() > 0) {
       mResponses.push_back(std::make_pair(mCurrentPrincipalParticle,
@@ -2432,7 +2436,7 @@ void Detector::FinishPrimary()
 
 #ifdef ZDC_FASTSIM_ONNX
   if (o2::zdc::ZDCSimParam::Instance().useZDCFastSim && mFastSimModel != nullptr && mFastSimClassifier != nullptr) {
-    std::fstream output("o2sim-FastSimResult", output.out | output.app);
+    std::fstream output("o2sim-FastSimResult", std::fstream::out | std::fstream::app);
     if (!output.is_open()) {
       LOG(error) << "Could not open file.";
     } else {
@@ -2443,6 +2447,7 @@ void Detector::FinishPrimary()
       }
       mFastSimResults.clear();
     }
+    output.close();
   }
 #endif
 }
@@ -2470,16 +2475,22 @@ void Detector::BeginPrimary()
                                          static_cast<float>(mCurrentPrincipalParticle.GetPDG()->Charge())};
 
     auto scaledClassParticle = mClassifierScaler.scale(rawInput);
-    if (scaledClassParticle.has_value()) {
+    if (!scaledClassParticle.has_value()) {
+      LOG(error) << "FastSimModule: error occurred on scaling";
+    } else {
       std::vector<std::vector<float>> classifierInput = {std::move(*scaledClassParticle)};
       mFastSimClassifier->setInput(classifierInput);
       mFastSimClassifier->run();
-      if (fastsim::processors::readClassifier(mFastSimClassifier->getResult()[0])) {
+      if (fastsim::processors::readClassifier(mFastSimClassifier->getResult()[0], 1)[0]) {
         auto scaledModelParticle = mModelScaler.scale(rawInput);
-        std::vector<std::vector<float>> modelInput = {mNoise, std::move(*scaledModelParticle)};
-        mFastSimModel->setInput(modelInput);
-        mFastSimModel->run();
-        mFastSimResults.push_back(fastsim::processors::calculateChannels(mFastSimModel->getResult()[0]));
+        if (!scaledModelParticle.has_value()) {
+          LOG(error) << "FastSimModule: error occurred on scaling";
+        } else {
+          std::vector<std::vector<float>> modelInput = {fastsim::normal_distribution(0.0, 1.0, 10), std::move(*scaledModelParticle)};
+          mFastSimModel->setInput(modelInput);
+          mFastSimModel->run();
+          mFastSimResults.push_back(fastsim::processors::calculateChannels(mFastSimModel->getResult()[0], 1)[0]);
+        }
       } else {
         mFastSimResults.push_back({0, 0, 0, 0, 0});
       }

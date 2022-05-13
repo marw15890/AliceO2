@@ -9,21 +9,13 @@
 // granted to it by virtue of its status as an Intergovernmental Organization
 // or submit itself to any jurisdiction.
 
-#include "aliasFixer.h"
-#include <algorithm>
+#ifdef __CLING__
 
-namespace o2::muon
-{
-std::string replaceDotByUnderscore(const std::string& alias)
-{
-  std::string a{alias};
-  std::transform(a.begin(), a.end(), a.begin(), [](unsigned char c) {
-    if (c == '.') {
-      return '_';
-    }
-    return (char)c;
-  });
-  return a;
-}
+#pragma link off all globals;
+#pragma link off all classes;
+#pragma link off all functions;
 
-} // namespace o2::muon
+#pragma link C++ class o2::mch::DigitFilterParam + ;
+#pragma link C++ class o2::conf::ConfigurableParamHelper < o2::mch::DigitFilterParam> + ;
+
+#endif
