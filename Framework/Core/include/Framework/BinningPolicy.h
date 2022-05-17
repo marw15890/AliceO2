@@ -21,30 +21,6 @@
 namespace o2::framework
 {
 
-namespace binning_helpers
-{
-template <typename... Cs>
-std::array<arrow::ChunkedArray*, sizeof...(Cs)> getArrowColumns(arrow::Table* table, pack<Cs...>)
-{
-  static_assert(std::conjunction_v<typename Cs::persistent...>, "BinningPolicy: only persistent columns accepted (not dynamic and not index ones");
-  return std::array<arrow::ChunkedArray*, sizeof...(Cs)>{o2::soa::getIndexFromLabel(table, Cs::columnLabel())...};
-}
-
-template <typename... Cs>
-std::array<std::shared_ptr<arrow::Array>, sizeof...(Cs)> getChunks(arrow::Table* table, pack<Cs...>, uint64_t ci)
-{
-  static_assert(std::conjunction_v<typename Cs::persistent...>, "BinningPolicy: only persistent columns accepted (not dynamic and not index ones");
-  return std::array<std::shared_ptr<arrow::Array>, sizeof...(Cs)>{o2::soa::getIndexFromLabel(table, Cs::columnLabel())->chunk(ci)...};
-}
-
-template <typename... Cs>
-std::tuple<typename Cs::type...> getRowData(arrow::Table* table, pack<Cs...>, uint64_t ci, uint64_t ai)
-{
-  static_assert(std::conjunction_v<typename Cs::persistent...>, "BinningPolicy: only persistent columns accepted (not dynamic and not index ones");
-  return std::make_tuple(std::static_pointer_cast<o2::soa::arrow_array_for_t<typename Cs::type>>(o2::soa::getIndexFromLabel(table, Cs::columnLabel())->chunk(ci))->raw_values()[ai]...);
-}
-} // namespace binning_helpers
-
 template <typename C, typename... Cs>
 struct BinningPolicy {
   BinningPolicy(std::array<std::vector<double>, sizeof...(Cs) + 1> bins, bool ignoreOverflows = true) : mBins(bins), mIgnoreOverflows(ignoreOverflows)
@@ -154,18 +130,24 @@ struct BinningPolicy {
     return getBinAt(i, j, k);
   }
 
-  pack<C, Cs...> getColumns() const { return pack<C, Cs...>{}; }
-  static constexpr int mColumnsCount = sizeof...(Cs) + 1;
+  using persistent_columns_t = framework::selected_pack<o2::soa::is_persistent_t, C, Cs...>;
 
  private:
-  int getBinAt(unsigned int i, unsigned int j, unsigned int k) const
+  // We substract 1 to account for VARIABLE_WIDTH in the bins vector
+  // We substract second 1 if we omit values below minima (underflow, mapped to -1)
+  int getBinAt(unsigned int iRaw, unsigned int jRaw, unsigned int kRaw) const
   {
+    int shiftBinsWithoutOverflow = mIgnoreOverflows ? 1 : 0;
+    unsigned int i = iRaw - 1 - shiftBinsWithoutOverflow;
+    unsigned int j = jRaw - 1 - shiftBinsWithoutOverflow;
+    unsigned int k = kRaw - 1 - shiftBinsWithoutOverflow;
+    auto xBinsCount = this->mBins[0].size() - 1 - shiftBinsWithoutOverflow;
     if constexpr (sizeof...(Cs) == 0) {
-      return i - 1;
+      return i;
     } else if constexpr (sizeof...(Cs) == 1) {
-      return (i - 1) + (j - 1) * this->mBins[0].size();
+      return i + j * xBinsCount;
     } else if constexpr (sizeof...(Cs) == 2) {
-      return (i - 1) + (j - 1) * this->mBins[0].size() + (k - 1) * (this->mBins[0].size() + this->mBins[1].size());
+      return i + j * xBinsCount + k * xBinsCount * (this->mBins[1].size() - 1 - shiftBinsWithoutOverflow);
     } else {
       return -1;
     }
@@ -178,7 +160,9 @@ struct BinningPolicy {
       this->mBins[ind].clear();
       this->mBins[ind].resize(nBins + 2);
       this->mBins[ind][0] = VARIABLE_WIDTH;
-      std::iota(std::begin(this->mBins[ind]) + 1, std::end(this->mBins[ind]), bins[2] - bins[1] / nBins);
+      for (int i = 0; i <= nBins; i++) {
+        this->mBins[ind][i + 1] = bins[1] + i * (bins[2] - bins[1]) / nBins;
+      }
     }
   }
 
@@ -196,8 +180,7 @@ struct NoBinningPolicy {
     return std::get<0>(data);
   }
 
-  pack<C> getColumns() const { return pack<C>{}; }
-  static constexpr int mColumnsCount = 1;
+  using persistent_columns_t = framework::selected_pack<o2::soa::is_persistent_t, C>;
 };
 
 } // namespace o2::framework

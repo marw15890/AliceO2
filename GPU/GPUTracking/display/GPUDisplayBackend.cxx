@@ -14,9 +14,7 @@
 
 #include "GPUDisplayBackend.h"
 
-#ifdef GPUCA_BUILD_EVENT_DISPLAY
 #include "GPUDisplayBackendOpenGL.h"
-#endif
 
 #ifdef GPUCA_BUILD_EVENT_DISPLAY_VULKAN
 #include "GPUDisplayBackendVulkan.h"
@@ -44,22 +42,21 @@ GPUDisplayBackend::~GPUDisplayBackend() = default;
 
 GPUDisplayBackend* GPUDisplayBackend::getBackend(const char* type)
 {
-#ifdef GPUCA_BUILD_EVENT_DISPLAY
-  if (strcmp(type, "opengl") == 0) {
-    return new GPUDisplayBackendOpenGL;
-  }
-#endif
 #ifdef GPUCA_BUILD_EVENT_DISPLAY_VULKAN
-  if (strcmp(type, "vulkan") == 0) {
+  if (strcmp(type, "vulkan") == 0 || strcmp(type, "auto") == 0) {
     return new GPUDisplayBackendVulkan;
-  }
+  } else
 #endif
+  if (strcmp(type, "opengl") == 0 || strcmp(type, "auto") == 0) {
+    return new GPUDisplayBackendOpenGL;
+  } else {
+    GPUError("Requested renderer not available");
+  }
   return nullptr;
 }
 
 int GPUDisplayBackend::InitBackend()
 {
-#ifdef GPUCA_BUILD_EVENT_DISPLAY
   int retVal = InitBackendA();
   if (retVal) {
     return retVal;
@@ -102,8 +99,12 @@ int GPUDisplayBackend::InitBackend()
     return 0;
   }
 
-  mDisplay->drawTextFontSize() = mDisplay->cfg().fontSize;
-  FT_Set_Pixel_Sizes(face, 0, mDisplay->cfg().fontSize * 4); // Font size scaled by 4, can be downsampled
+  int fontSize = mDisplay->cfg().fontSize;
+  mDisplay->drawTextFontSize() = fontSize;
+  if (smoothFont()) {
+    fontSize *= 4; // Font size scaled by 4, can be downsampled
+  }
+  FT_Set_Pixel_Sizes(face, 0, fontSize);
 
   for (unsigned int i = 0; i < 128; i++) {
     if (FT_Load_Char(face, i, FT_LOAD_RENDER)) {
@@ -119,9 +120,6 @@ int GPUDisplayBackend::InitBackend()
   mFreetypeInitialized = true;
 #endif // GPUCA_BUILD_EVENT_DISPLAY_FREETYPE
   return retVal;
-#else  // GPUCA_BUILD_EVENT_DISPLAY
-  return 0;
-#endif // GPUCA_BUILD_EVENT_DISPLAY
 }
 
 void GPUDisplayBackend::ExitBackend()
@@ -136,7 +134,6 @@ std::vector<char> GPUDisplayBackend::getPixels()
   return retVal;
 }
 
-#ifdef GPUCA_BUILD_EVENT_DISPLAY
 void GPUDisplayBackend::fillIndirectCmdBuffer()
 {
   mCmdBuffer.clear();
@@ -163,4 +160,8 @@ float GPUDisplayBackend::getDownsampleFactor(bool screenshot)
   }
   return factor;
 }
-#endif
+
+bool GPUDisplayBackend::smoothFont()
+{
+  return mDisplay->cfg().smoothFont < 0 ? (mDisplay->cfg().fontSize > 12) : mDisplay->cfg().smoothFont;
+}

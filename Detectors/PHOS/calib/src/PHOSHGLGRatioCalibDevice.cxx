@@ -21,6 +21,7 @@
 #include "Framework/ConfigParamRegistry.h"
 #include "Framework/ControlService.h"
 #include "Framework/WorkflowSpec.h"
+#include "Framework/CCDBParamSpec.h"
 #include "DataFormatsPHOS/TriggerRecord.h"
 #include "DataFormatsPHOS/Cell.h"
 #include "PHOSBase/Mapping.h"
@@ -45,12 +46,18 @@ void PHOSHGLGRatioCalibDevice::run(o2::framework::ProcessingContext& ctx)
 
   // scan Cells stream, collect HG/LG pairs
   if (mRunStartTime == 0) {
-    mRunStartTime = o2::header::get<o2::framework::DataProcessingHeader*>(ctx.inputs().get("cellTriggerRecords").header)->startTime;
+    const auto ref = ctx.inputs().getFirstValid(true);
+    mRunStartTime = DataRefUtils::getHeader<DataProcessingHeader*>(ref)->creation; // approximate time in ms
   }
 
   if (mStatistics <= 0) { // skip the rest of the run
     return;
   }
+  if (!mOldCalibParams) { // Default map and calibration was not set, use CCDB
+    LOG(info) << "Getting calib from CCDB";
+    mOldCalibParams = ctx.inputs().get<o2::phos::CalibParams*>("oldclb");
+  }
+
   auto cells = ctx.inputs().get<gsl::span<o2::phos::Cell>>("cells");
   LOG(debug) << "[PHOSHGLGRatioCalibDevice - run]  Received " << cells.size() << " cells, running calibration ...";
   auto cellsTR = ctx.inputs().get<gsl::span<o2::phos::TriggerRecord>>("cellTriggerRecords");
@@ -155,14 +162,7 @@ void PHOSHGLGRatioCalibDevice::checkRatios()
   }
   LOG(info) << "Retrieving current HG/LG ratio from CCDB";
 
-  // Read current pedestals for comparison
-  // Normally CCDB manager should get and own objects
-  auto& ccdbManager = o2::ccdb::BasicCCDBManager::instance();
-  ccdbManager.setURL(o2::base::NameConf::getCCDBServer());
-  LOG(info) << " set-up CCDB " << o2::base::NameConf::getCCDBServer();
-
-  CalibParams* currentCalibParams = ccdbManager.get<o2::phos::CalibParams>("PHS/Calib/CalibParams");
-  if (!currentCalibParams) { // was not read from CCDB, but expected
+  if (!mOldCalibParams) { // was not read from CCDB, but expected
     mUpdateCCDB = true;
     LOG(error) << "Can not read current CalibParams from ccdb";
     return;
@@ -173,10 +173,10 @@ void PHOSHGLGRatioCalibDevice::checkRatios()
   int nChanged = 0;
   for (short i = o2::phos::Mapping::NCHANNELS; i > 1792; i--) {
     short dp = 2;
-    if (currentCalibParams->getHGLGRatio(i) > 0) {
-      dp = mCalibParams->getHGLGRatio(i) / currentCalibParams->getHGLGRatio(i);
+    if (mOldCalibParams->getHGLGRatio(i) > 0) {
+      dp = mCalibParams->getHGLGRatio(i) / mOldCalibParams->getHGLGRatio(i);
     } else {
-      if (mCalibParams->getHGLGRatio(i) == 0 && currentCalibParams->getHGLGRatio(i) == 0) {
+      if (mCalibParams->getHGLGRatio(i) == 0 && mOldCalibParams->getHGLGRatio(i) == 0) {
         dp = 1.;
       }
     }
@@ -185,9 +185,9 @@ void PHOSHGLGRatioCalibDevice::checkRatios()
       nChanged++;
     }
     // Copy other stuff from the current CalibParams to new one
-    mCalibParams->setGain(i, currentCalibParams->getGain(i));
-    mCalibParams->setHGTimeCalib(i, currentCalibParams->getHGTimeCalib(i));
-    mCalibParams->setLGTimeCalib(i, currentCalibParams->getLGTimeCalib(i));
+    mCalibParams->setGain(i, mOldCalibParams->getGain(i));
+    mCalibParams->setHGTimeCalib(i, mOldCalibParams->getHGTimeCalib(i));
+    mCalibParams->setLGTimeCalib(i, mOldCalibParams->getLGTimeCalib(i));
   }
   LOG(info) << nChanged << "channels changed more than 10 %";
   if (nChanged > kMinorChange) { // serious change, do not update CCDB automatically, use "force" option to overwrite
@@ -209,7 +209,8 @@ void PHOSHGLGRatioCalibDevice::sendOutput(DataAllocator& output)
     // prepare all info to be sent to CCDB
     auto flName = o2::ccdb::CcdbApi::generateFileName("CalibParams");
     std::map<std::string, std::string> md;
-    o2::ccdb::CcdbObjectInfo info("PHS/Calib/CalibParams", "CalibParams", flName, md, mRunStartTime, 99999999999999);
+    long validityTime = mRunStartTime + 31622400000; // one year validity range
+    o2::ccdb::CcdbObjectInfo info("PHS/Calib/CalibParams", "CalibParams", flName, md, mRunStartTime, validityTime);
     info.setMetaData(md);
     auto image = o2::ccdb::CcdbApi::createObjectImage(mCalibParams.get(), &info);
 
@@ -233,6 +234,9 @@ DataProcessorSpec o2::phos::getHGLGRatioCalibSpec(bool useCCDB, bool forceUpdate
   std::vector<InputSpec> inputs;
   inputs.emplace_back("cells", ConcreteDataTypeMatcher{o2::header::gDataOriginPHS, "CELLS"}, o2::framework::Lifetime::Timeframe);
   inputs.emplace_back("cellTriggerRecords", ConcreteDataTypeMatcher{o2::header::gDataOriginPHS, "CELLTRIGREC"}, o2::framework::Lifetime::Timeframe);
+  if (useCCDB) {
+    inputs.emplace_back("oldclb", o2::header::gDataOriginPHS, "PHS_Calibr", 0, o2::framework::Lifetime::Condition, o2::framework::ccdbParamSpec("PHS/Calib/CalibParams"));
+  }
 
   using clbUtils = o2::calibration::Utils;
   std::vector<OutputSpec> outputs;

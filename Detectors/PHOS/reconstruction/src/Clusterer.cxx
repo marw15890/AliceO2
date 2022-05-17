@@ -34,6 +34,18 @@ void Clusterer::initialize()
   }
   mFirstElememtInEvent = 0;
   mLastElementInEvent = -1;
+  LOG(info) << "Clusterizer parameters";
+  const PHOSSimParams& sp = o2::phos::PHOSSimParams::Instance();
+  LOG(info) << "mLogWeight = " << sp.mLogWeight;
+  LOG(info) << "mDigitMinEnergy = " << sp.mDigitMinEnergy;
+  LOG(info) << "mClusteringThreshold = " << sp.mClusteringThreshold;
+  LOG(info) << "mLocalMaximumCut = " << sp.mLocalMaximumCut;
+  LOG(info) << "mUnfoldMaxSize = " << sp.mUnfoldMaxSize;
+  LOG(info) << "mUnfoldClusters = " << sp.mUnfoldClusters;
+  LOG(info) << "mUnfogingEAccuracy = " << sp.mUnfogingEAccuracy;
+  LOG(info) << "mUnfogingXZAccuracy = " << sp.mUnfogingXZAccuracy;
+  LOG(info) << "mUnfogingChi2Accuracy = " << sp.mUnfogingChi2Accuracy;
+  LOG(info) << "mNMaxIterations = " << sp.mNMaxIterations;
 }
 //____________________________________________________________________________
 void Clusterer::process(gsl::span<const Digit> digits, gsl::span<const TriggerRecord> dtr,
@@ -131,10 +143,7 @@ void Clusterer::processCells(gsl::span<const Cell> cells, gsl::span<const Trigge
                           x, z, i, 1.);
     }
     mLastElementInEvent = cluelements.size();
-
     makeClusters(clusters, cluelements);
-
-    LOG(debug) << "Found clusters from " << indexStart << " to " << clusters.size();
     trigRec.emplace_back(tr.getBCData(), indexStart, clusters.size() - indexStart);
   }
   if (mProcessMC) {
@@ -148,6 +157,7 @@ void Clusterer::makeClusters(std::vector<Cluster>& clusters, std::vector<CluElem
   // Cluster contains first and (next-to) last index of the combined list of clusterelements, so
   // add elements to final list and mark element in internal list as used (zero energy)
 
+  LOG(debug) << "makeClusters: clusters size=" << clusters.size() << " elements=" << cluelements.size();
   int iFirst = 0; // first index of digit which potentially can be a part of cluster
   int n = mCluEl.size();
   for (int i = iFirst; i < n; i++) {
@@ -202,6 +212,7 @@ void Clusterer::makeClusters(std::vector<Cluster>& clusters, std::vector<CluElem
       }
     } // loop over cluster
     clu->setLastCluEl(cluelements.size());
+    LOG(debug) << "Cluster: elements from " << clu->getFirstCluEl() << " last=" << cluelements.size();
 
     // Unfold overlapped clusters
     // Split clusters with several local maxima if necessary
@@ -290,7 +301,7 @@ void Clusterer::unfoldOneCluster(Cluster& iniClu, char nMax, std::vector<Cluster
       mzB[iclu] = 0;
     }
     // Fill matrix and vector
-    for (int idig = firstCE; idig < lastCE; idig++) {
+    for (uint32_t idig = firstCE; idig < lastCE; idig++) {
       CluElement& ce = cluelements[idig];
       double sumA = 0.;
       for (int iclu = nMax; iclu--;) {
@@ -363,12 +374,18 @@ void Clusterer::unfoldOneCluster(Cluster& iniClu, char nMax, std::vector<Cluster
     }
     // now exact solution for amplitudes
     bk.SetMatrix(B);
-    if (bk.Solve(C)) {
-      for (int iclu = 0; iclu < nMax; iclu++) {
-        double eOld = meMax[iclu];
-        meMax[iclu] = C(iclu);
-        // insuficientAccuracy|=fabs(meMax[iclu]-eOld)> meMax[iclu]*o2::phos::PHOSSimParams::Instance().mUnfogingEAccuracy ;
+    if (bk.Decompose()) {
+      if (bk.Solve(C)) {
+        for (int iclu = 0; iclu < nMax; iclu++) {
+          meMax[iclu] = C(iclu);
+          // double eOld = meMax[iclu];
+          // insuficientAccuracy|=fabs(meMax[iclu]-eOld)> meMax[iclu]*o2::phos::PHOSSimParams::Instance().mUnfogingEAccuracy ;
+        }
+      } else {
+        LOG(warning) << "Failed to decompose matrix of size " << nMax;
       }
+    } else {
+      LOG(warning) << "Failed to decompose matrix of size " << nMax;
     }
     insuficientAccuracy &= (chi2 > o2::phos::PHOSSimParams::Instance().mUnfogingChi2Accuracy * nMax);
     nIterations++;
@@ -379,8 +396,7 @@ void Clusterer::unfoldOneCluster(Cluster& iniClu, char nMax, std::vector<Cluster
     // copy cluElements to the final list
     int start = cluelements.size();
     int nce = 0;
-    for (int idig = firstCE; idig < lastCE; idig++) {
-      float eDigit = eInClusters[idig - firstCE][iclu];
+    for (uint32_t idig = firstCE; idig < lastCE; idig++) {
       CluElement& el = cluelements[idig];
       float ei = el.energy * mProp[(idig - firstCE) * nMax + iclu];
       if (ei > o2::phos::PHOSSimParams::Instance().mDigitMinEnergy) {
@@ -627,12 +643,14 @@ char Clusterer::getNumberOfLocalMax(Cluster& clu, std::vector<CluElement>& cluel
   mIsLocalMax.reserve(clu.getMultiplicity());
 
   uint32_t iFirst = clu.getFirstCluEl(), iLast = clu.getLastCluEl();
+  LOG(debug) << "getNumberOfLocalMax: iFirst=" << iFirst << " iLast=" << iLast << " elements=" << cluel.size();
   for (uint32_t i = iFirst; i < iLast; i++) {
     mIsLocalMax.push_back(cluel[i].energy > cluSeed);
   }
 
+  LOG(debug) << "mIsLocalMax size=" << mIsLocalMax.size();
   for (uint32_t i = iFirst; i < iLast - 1; i++) {
-    for (int j = i + 1; j < iLast; j++) {
+    for (uint32_t j = i + 1; j < iLast; j++) {
 
       if (Geometry::areNeighbours(cluel[i].absId, cluel[j].absId) == 1) {
         if (cluel[i].energy > cluel[j].energy) {
@@ -652,8 +670,9 @@ char Clusterer::getNumberOfLocalMax(Cluster& clu, std::vector<CluElement>& cluel
     }   // digit j
   }     // digit i
 
+  LOG(debug) << " Filled mIsLocalMax";
   int iDigitN = 0;
-  for (int i = 0; i < mIsLocalMax.size(); i++) {
+  for (std::size_t i = 0; i < mIsLocalMax.size(); i++) {
     if (mIsLocalMax[i]) {
       mMaxAt[iDigitN] = i + iFirst;
       iDigitN++;

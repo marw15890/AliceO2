@@ -21,6 +21,7 @@
 #include "Framework/ConfigParamRegistry.h"
 #include "Framework/ControlService.h"
 #include "Framework/WorkflowSpec.h"
+#include "Framework/CCDBParamSpec.h"
 #include "DataFormatsPHOS/TriggerRecord.h"
 #include "DataFormatsPHOS/Cell.h"
 #include "PHOSBase/Mapping.h"
@@ -32,7 +33,9 @@ void PHOSPedestalCalibDevice::init(o2::framework::InitContext& ic)
 {
 
   mStatistics = ic.options().get<int>("statistics"); // desired number of events
-
+  LOG(info) << "PHOS pedestal init: will collect " << mStatistics << " events";
+  LOG(info) << "mUseCCDB (try to get current object) = " << mUseCCDB;
+  LOG(info) << "mForceUpdate (update CCDB anyway) =" << mForceUpdate;
   // Create histograms for mean and RMS
   short n = o2::phos::Mapping::NCHANNELS - 1792;
   mMeanHG.reset(new TH2F("MeanHighGain", "MeanHighGain", n, 1792.5, n + 1792.5, 100, 0., 100.));
@@ -43,13 +46,22 @@ void PHOSPedestalCalibDevice::init(o2::framework::InitContext& ic)
 
 void PHOSPedestalCalibDevice::run(o2::framework::ProcessingContext& ctx)
 {
-  // scan Cells stream, collect mean and RMS then calculateaverage and post
+  // scan Cells stream, collect mean and RMS then calculate average and post
+
   if (mRunStartTime == 0) {
-    mRunStartTime = o2::header::get<o2::framework::DataProcessingHeader*>(ctx.inputs().get("cellTriggerRecords").header)->startTime;
+    const auto ref = ctx.inputs().getFirstValid(true);
+    mRunStartTime = DataRefUtils::getHeader<DataProcessingHeader*>(ref)->creation; // approximate time in ms
+  }
+  if (!mOldPed) { // Default map and calibration was not set, use CCDB
+    LOG(info) << "Getting calib from CCDB";
+    mOldPed = ctx.inputs().get<o2::phos::Pedestals*>("oldped");
   }
 
   if (mStatistics <= 0) { // skip the rest of the run
     return;
+  }
+  if (mStatistics % 100 == 0) {
+    LOG(info) << mStatistics << " left to produce calibration";
   }
   auto cells = ctx.inputs().get<gsl::span<o2::phos::Cell>>("cells");
   LOG(debug) << "[PHOSPedestalCalibDevice - run]  Received " << cells.size() << " cells, running calibration ...";
@@ -95,7 +107,8 @@ void PHOSPedestalCalibDevice::sendOutput(DataAllocator& output)
     // prepare all info to be sent to CCDB
     auto flName = o2::ccdb::CcdbApi::generateFileName("Pedestals");
     std::map<std::string, std::string> md;
-    o2::ccdb::CcdbObjectInfo info("PHS/Calib/Pedestals", "Pedestals", flName, md, mRunStartTime, 99999999999999);
+    long validityTime = mRunStartTime + 7776000000; // 3 months validity time
+    o2::ccdb::CcdbObjectInfo info("PHS/Calib/Pedestals", "Pedestals", flName, md, mRunStartTime, validityTime);
     info.setMetaData(md);
     auto image = o2::ccdb::CcdbApi::createObjectImage(mPedestals.get(), &info);
 
@@ -107,6 +120,19 @@ void PHOSPedestalCalibDevice::sendOutput(DataAllocator& output)
     header::DataHeader::SubSpecificationType subSpec{(header::DataHeader::SubSpecificationType)0};
     output.snapshot(Output{o2::calibration::Utils::gDataOriginCDBPayload, "PHOS_Pedestal", subSpec}, *image.get());
     output.snapshot(Output{o2::calibration::Utils::gDataOriginCDBWrapper, "PHOS_Pedestal", subSpec}, info);
+    // Now same for DCS as vector
+    std::vector<short> dcsPedestals(2 * (o2::phos::Mapping::NCHANNELS - 1792));
+    // copy HG then LG pedestals
+    for (short absId = 1793; absId <= o2::phos::Mapping::NCHANNELS; absId++) {
+      dcsPedestals.emplace_back(mPedestals->getHGPedestal(absId));
+    }
+    for (short absId = 1793; absId <= o2::phos::Mapping::NCHANNELS; absId++) {
+      dcsPedestals.emplace_back(mPedestals->getLGPedestal(absId));
+    }
+    auto imageDCS = o2::ccdb::CcdbApi::createObjectImage(&dcsPedestals, &info);
+    header::DataHeader::SubSpecificationType subSpec1{(header::DataHeader::SubSpecificationType)1};
+    output.snapshot(Output{o2::calibration::Utils::gDataOriginCDBPayload, "PHOS_Pedestal", subSpec1}, *imageDCS.get());
+    output.snapshot(Output{o2::calibration::Utils::gDataOriginCDBWrapper, "PHOS_Pedestal", subSpec1}, info);
   }
   // Anyway send change to QC
   LOG(info) << "[PHOSPedestalCalibDevice - run] Sending QC ";
@@ -115,6 +141,8 @@ void PHOSPedestalCalibDevice::sendOutput(DataAllocator& output)
 
 void PHOSPedestalCalibDevice::calculatePedestals()
 {
+  LOG(info) << "Start pedestals calculation";
+
   mPedestals.reset(new Pedestals());
 
   // Calculate mean of pedestal distributions
@@ -137,6 +165,7 @@ void PHOSPedestalCalibDevice::calculatePedestals()
     mPedestals->setLGRMS(cellId, a);
     pr->Delete();
   }
+  LOG(info) << "Pedestals calculated";
 }
 
 void PHOSPedestalCalibDevice::checkPedestals()
@@ -146,30 +175,20 @@ void PHOSPedestalCalibDevice::checkPedestals()
     return;
   }
 
-  LOG(info) << "Retrieving current Pedestals from CCDB";
-  // Read current pedestals for comparison
-  // Normally CCDB manager should get and own objects
-  auto& ccdbManager = o2::ccdb::BasicCCDBManager::instance();
-  ccdbManager.setURL(o2::base::NameConf::getCCDBServer());
-  LOG(info) << " set-up CCDB " << o2::base::NameConf::getCCDBServer();
-
-  Pedestals* currentPedestals = ccdbManager.get<o2::phos::Pedestals>("PHS/Calib/Pedestals");
-  if (!currentPedestals) { // was not read from CCDB, but expected
+  if (!mOldPed) { // was not read from CCDB, but expected
     mUpdateCCDB = true;
     return;
   }
 
-  LOG(info) << "Got current Pedestals from CCDB";
-
   // Compare to current
   int nChanged = 0;
   for (short i = o2::phos::Mapping::NCHANNELS; i > 1792; i--) {
-    short dp = mPedestals->getHGPedestal(i) - currentPedestals->getHGPedestal(i);
+    short dp = mPedestals->getHGPedestal(i) - mOldPed->getHGPedestal(i);
     mPedDiff[i] = dp;
     if (abs(dp) > 1) { // not a fluctuation
       nChanged++;
     }
-    dp = mPedestals->getLGPedestal(i) - currentPedestals->getLGPedestal(i);
+    dp = mPedestals->getLGPedestal(i) - mOldPed->getLGPedestal(i);
     mPedDiff[i + o2::phos::Mapping::NCHANNELS] = dp;
     if (abs(dp) > 1) { // not a fluctuation
       nChanged++;
@@ -193,6 +212,9 @@ o2::framework::DataProcessorSpec o2::phos::getPedestalCalibSpec(bool useCCDB, bo
   std::vector<InputSpec> inputs;
   inputs.emplace_back("cells", ConcreteDataTypeMatcher{o2::header::gDataOriginPHS, "CELLS"}, o2::framework::Lifetime::Timeframe);
   inputs.emplace_back("cellTriggerRecords", ConcreteDataTypeMatcher{o2::header::gDataOriginPHS, "CELLTRIGREC"}, o2::framework::Lifetime::Timeframe);
+  if (useCCDB) {
+    inputs.emplace_back("oldped", o2::header::gDataOriginPHS, "PHS_Calibr", 0, o2::framework::Lifetime::Condition, o2::framework::ccdbParamSpec("PHS/Calib/Pedestals"));
+  }
 
   using clbUtils = o2::calibration::Utils;
   std::vector<OutputSpec> outputs;

@@ -100,9 +100,9 @@ void RawToCellConverterSpec::run(framework::ProcessingContext& ctx)
              contDeadBeef == maxWarn ? fmt::format(". {} such inputs in row received, stopping reporting", contDeadBeef) : "");
       }
       mOutputCells.clear();
-      ctx.outputs().snapshot(o2::framework::Output{"PHS", "CELLS", 0, o2::framework::Lifetime::Timeframe}, mOutputCells);
+      ctx.outputs().snapshot(o2::framework::Output{"PHS", "CELLS", mflpId, o2::framework::Lifetime::Timeframe}, mOutputCells);
       mOutputTriggerRecords.clear();
-      ctx.outputs().snapshot(o2::framework::Output{"PHS", "CELLTRIGREC", 0, o2::framework::Lifetime::Timeframe}, mOutputTriggerRecords);
+      ctx.outputs().snapshot(o2::framework::Output{"PHS", "CELLTRIGREC", mflpId, o2::framework::Lifetime::Timeframe}, mOutputTriggerRecords);
       mOutputHWErrors.clear();
       ctx.outputs().snapshot(o2::framework::Output{"PHS", "RAWHWERRORS", 0, o2::framework::Lifetime::Timeframe}, mOutputHWErrors);
       if (mFillChi2) {
@@ -146,7 +146,7 @@ void RawToCellConverterSpec::run(framework::ProcessingContext& ctx)
       auto triggerOrbit = o2::raw::RDHUtils::getTriggerOrbit(header);
       auto ddl = o2::raw::RDHUtils::getFEEID(header);
 
-      if (ddl > o2::phos::Mapping::NDDL || ddl < 0) { // only 14 correct DDLs
+      if (ddl >= o2::phos::Mapping::NDDL) { // only 0..13 correct DDLs
         LOG(error) << "DDL=" << ddl;
         mOutputHWErrors.emplace_back(14, 16, char(ddl)); // Add non-existing DDL as DDL 15
         continue;                                        // skip STU ddl
@@ -257,15 +257,15 @@ void RawToCellConverterSpec::run(framework::ProcessingContext& ctx)
   mLastSize = 1.1 * mOutputCells.size();
 
   LOG(debug) << "[PHOSRawToCellConverter - run] Writing " << mOutputCells.size() << " cells ...";
-  ctx.outputs().snapshot(o2::framework::Output{"PHS", "CELLS", 0, o2::framework::Lifetime::Timeframe}, mOutputCells);
-  ctx.outputs().snapshot(o2::framework::Output{"PHS", "CELLTRIGREC", 0, o2::framework::Lifetime::Timeframe}, mOutputTriggerRecords);
+  ctx.outputs().snapshot(o2::framework::Output{"PHS", "CELLS", mflpId, o2::framework::Lifetime::Timeframe}, mOutputCells);
+  ctx.outputs().snapshot(o2::framework::Output{"PHS", "CELLTRIGREC", mflpId, o2::framework::Lifetime::Timeframe}, mOutputTriggerRecords);
   ctx.outputs().snapshot(o2::framework::Output{"PHS", "RAWHWERRORS", 0, o2::framework::Lifetime::Timeframe}, mOutputHWErrors);
   if (mFillChi2) {
     ctx.outputs().snapshot(o2::framework::Output{"PHS", "CELLFITQA", 0, o2::framework::Lifetime::QA}, mOutputFitChi);
   }
 }
 
-o2::framework::DataProcessorSpec o2::phos::reco_workflow::getRawToCellConverterSpec(int flpId)
+o2::framework::DataProcessorSpec o2::phos::reco_workflow::getRawToCellConverterSpec(unsigned int flpId)
 {
   std::vector<o2::framework::InputSpec> inputs;
   inputs.emplace_back("RAWDATA", o2::framework::ConcreteDataTypeMatcher{"PHS", "RAWDATA"}, o2::framework::Lifetime::Optional);
@@ -275,13 +275,13 @@ o2::framework::DataProcessorSpec o2::phos::reco_workflow::getRawToCellConverterS
   std::vector<o2::framework::OutputSpec> outputs;
   outputs.emplace_back("PHS", "CELLS", flpId, o2::framework::Lifetime::Timeframe);
   outputs.emplace_back("PHS", "CELLTRIGREC", flpId, o2::framework::Lifetime::Timeframe);
-  outputs.emplace_back("PHS", "RAWHWERRORS", flpId, o2::framework::Lifetime::Timeframe);
-  outputs.emplace_back("PHS", "CELLFITQA", flpId, o2::framework::Lifetime::QA);
+  outputs.emplace_back("PHS", "RAWHWERRORS", 0, o2::framework::Lifetime::Timeframe);
+  outputs.emplace_back("PHS", "CELLFITQA", 0, o2::framework::Lifetime::QA);
 
   return o2::framework::DataProcessorSpec{"PHOSRawToCellConverterSpec",
                                           inputs, // o2::framework::select("A:PHS/RAWDATA"),
                                           outputs,
-                                          o2::framework::adaptFromTask<o2::phos::reco_workflow::RawToCellConverterSpec>(),
+                                          o2::framework::adaptFromTask<o2::phos::reco_workflow::RawToCellConverterSpec>(flpId),
                                           o2::framework::Options{
                                             {"presamples", o2::framework::VariantType::Int, 2, {"presamples time offset"}},
                                             {"fitmethod", o2::framework::VariantType::String, "default", {"Fit method (default or semigaus)"}},

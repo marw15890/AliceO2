@@ -57,7 +57,7 @@ class CcdbApi //: public DatabaseInterface
 {
  public:
   /// \brief Default constructor
-  CcdbApi() = default;
+  CcdbApi();
   /// \brief Default destructor
   virtual ~CcdbApi();
 
@@ -294,7 +294,7 @@ class CcdbApi //: public DatabaseInterface
    * @param headers the headers found in the request. Will be emptied when we return false.
    * @return true if the headers where updated WRT last time, false if the previous results can still be used.
    */
-  static bool getCCDBEntryHeaders(std::string const& url, std::string const& etag, std::vector<std::string>& headers);
+  static bool getCCDBEntryHeaders(std::string const& url, std::string const& etag, std::vector<std::string>& headers, const std::string& agentID = "");
 
   /**
    * Extract the possible locations for a file and check whether or not
@@ -361,6 +361,9 @@ class CcdbApi //: public DatabaseInterface
 #endif
 
  private:
+  // report what file is read and for which purpose
+  void logReading(const std::string& fname, const std::string& comment) const;
+
   /**
    * Initialize in local mode; Objects will be retrieved from snapshot
    *
@@ -474,7 +477,7 @@ class CcdbApi //: public DatabaseInterface
   static TClass* tinfo2TClass(std::type_info const& tinfo);
 
   // split string on delimiters and return tokens as vector
-  std::vector<std::string> splitString(std::string string, const char* delimiters);
+  std::vector<std::string> splitString(const std::string& str, const char* delimiters);
 
   typedef size_t (*CurlWriteCallback)(void*, size_t, size_t, void*);
 
@@ -503,10 +506,22 @@ class CcdbApi //: public DatabaseInterface
 
   std::string getHostUrl(int hostIndex) const;
 
+  /**
+   * Function to check the keys for metadata
+   * see https://developers.cloudflare.com/rules/transform/request-header-modification/reference/header-format/
+   */
+  void checkMetadataKeys(std::map<std::string, std::string> const& metadata) const;
+
+  std::string getSnapshotDir(const std::string& topdir, const string& path) const { return topdir + "/" + path; }
+  std::string getSnapshotFile(const std::string& topdir, const string& path) const { return getSnapshotDir(topdir, path) + "/snapshot.root"; }
+
   /// Base URL of the CCDB (with port)
+  std::string mUniqueAgentID{}; // Unique User-Agent ID communicated to server for logging
   std::string mUrl{};
   std::vector<std::string> hostsPool{};
-  std::string mSnapshotTopPath{};
+  std::string mSnapshotTopPath{};    // root of the snaphot in the snapshot backend mode, i.e. with init("file://<dir>) call
+  std::string mSnapshotCachePath{};  // root of the local snapshot (to fill or impose, even if not in the snapshot backend mode)
+  bool mPreferSnapshotCache = false; // if snapshot is available, don't try to query its validity even in non-snapshot backend mode
   bool mInSnapshotMode = false;
   mutable TGrid* mAlienInstance = nullptr;                       // a cached connection to TGrid (needed for Alien locations)
   bool mHaveAlienToken = false;                                  // stores if an alien token is available

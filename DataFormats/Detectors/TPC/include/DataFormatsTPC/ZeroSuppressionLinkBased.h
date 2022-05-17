@@ -32,29 +32,31 @@ static constexpr uint32_t DataWordSizeBytes = DataWordSizeBits / 8; ///< size of
 struct CommonHeader {
   static constexpr uint32_t MagicWordLinkZS = 0xFC;
   static constexpr uint32_t MagicWordTrigger = 0xAA;
+  static constexpr uint32_t MagicWordTriggerV2 = 0xAB;
 
   union {
-    uint64_t word0 = 0;                  ///< lower 64 bits
-    struct {                             ///
-      uint64_t bitMaskLow : 64;          ///< lower bits of the 80 bit bitmask
-    };                                   ///
-  };                                     ///
-                                         ///
-  union {                                ///
-    uint64_t word1 = 0;                  ///< upper bits of the 80 bit bitmask
-    struct {                             ///
-      uint64_t bitMaskHigh : 16;         ///< higher bits of the 80 bit bitmask
-      uint32_t bunchCrossing : 12;       ///< bunch crossing number
-      uint32_t numWordsPayload : 4;      ///< number of 128bit words with 12bit ADC values
-      uint32_t syncOffsetBC : 8;         ///< sync offset in bunch crossings
-      uint32_t syncOffsetCRUCycles : 16; ///< sync offset in 240MHz CRU clock cycles
-      uint32_t magicWord : 8;            ///< not used
+    uint64_t word0 = 0;                        ///< lower 64 bits
+    struct {                                   ///
+      uint64_t bitMaskLow : 64;                ///< lower bits of the 80 bit bitmask
+    };                                         ///
+  };                                           ///
+                                               ///
+  union {                                      ///
+    uint64_t word1 = 0;                        ///< upper bits of the 80 bit bitmask
+    struct {                                   ///
+      uint64_t bitMaskHigh : 16;               ///< higher bits of the 80 bit bitmask
+      uint32_t bunchCrossing : 12;             ///< bunch crossing number
+      uint32_t numWordsPayload : 4;            ///< number of 128bit words with 12bit ADC values
+      uint32_t syncOffsetBC : 8;               ///< sync offset in bunch crossings
+      uint32_t syncOffsetCRUCyclesOrLink : 16; ///< sync offset in 240MHz CRU clock cycles, or link ID in improved format
+      uint32_t magicWord : 8;                  ///< magic word, identifies package
     };
   };
 
-  bool hasCorrectMagicWord() const { return (magicWord == MagicWordLinkZS) || (magicWord == MagicWordTrigger); }
+  bool hasCorrectMagicWord() const { return (magicWord == MagicWordLinkZS) || (magicWord == MagicWordTrigger) || (magicWord == MagicWordTriggerV2); }
   bool isLinkZS() const { return (magicWord == MagicWordLinkZS); }
   bool isTriggerInfo() const { return (magicWord == MagicWordTrigger); }
+  bool isTriggerInfoV2() const { return (magicWord == MagicWordTriggerV2); }
 };
 
 /// header definition of the zero suppressed link based data format
@@ -238,6 +240,28 @@ struct TriggerInfo {
 
   uint32_t getOrbit() const { return (uint32_t)orbit; }
   uint32_t getTriggerType() const { return (triggerTypeHigh << 20) + triggerTypeLow; }
+};
+
+/// Data definition for the new trigger information after FW update, allowing for interleaved triggers
+struct TriggerInfoV2 {
+  union {
+    uint64_t word0 = 0;             ///< lower 64 bits
+    struct {                        ///
+      uint32_t triggerType;         ///< tigger type
+      uint32_t orbit;               ///< orbit number
+    };                              ///
+  };                                ///
+                                    ///
+  union {                           ///
+    uint64_t word1 = 0;             ///< upper bits of the 80 bit bitmask
+    struct {                        ///
+      uint32_t bunchCrossing : 12;  ///< bunch crossing number
+      uint32_t empty1_0 : 16;       ///< empty
+      uint32_t numWordsPayload : 4; ///< number of 128bit words with 12bit ADC values, should always be 0
+      uint32_t empty1_1 : 24;       ///< empty
+      uint32_t magicWord : 8;       ///< magic word for identification
+    };
+  };
 };
 
 /// Container for Trigger information, header + data

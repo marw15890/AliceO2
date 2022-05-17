@@ -14,7 +14,6 @@
 
 #include "Framework/ASoA.h"
 #include "Framework/BinningPolicy.h"
-#include "Framework/Logger.h"
 #include "Framework/RuntimeError.h"
 #include <arrow/table.h>
 
@@ -54,102 +53,35 @@ struct NTupleType<T, 0, REST...> {
   using type = std::tuple<REST...>;
 };
 
+struct BinningIndex {
+  BinningIndex(int bin_, uint64_t index_) : bin(bin_), index(index_) {}
+
+  bool operator<(const BinningIndex& rhs) const { return std::tie(bin, index) < std::tie(rhs.bin, rhs.index); }
+
+  int bin;
+  uint64_t index;
+};
+
 // Group table (C++ vector of indices)
-inline bool sameCategory(std::pair<uint64_t, uint64_t> const& a, std::pair<uint64_t, uint64_t> const& b)
+inline bool sameCategory(BinningIndex const& a, BinningIndex const& b)
 {
-  return a.first < b.first;
+  return a.bin < b.bin;
 }
-inline bool diffCategory(std::pair<uint64_t, uint64_t> const& a, std::pair<uint64_t, uint64_t> const& b)
+inline bool diffCategory(BinningIndex const& a, BinningIndex const& b)
 {
-  return a.first >= b.first;
-}
-
-template <typename T2, typename ARRAY, typename T>
-std::vector<std::pair<uint64_t, uint64_t>> oldGroupTable(const T& table, const std::string& categoryColumnName, int minCatSize, const T2& outsider)
-{
-  auto columnIndex = table.asArrowTable()->schema()->GetFieldIndex(categoryColumnName);
-  auto chunkedArray = table.asArrowTable()->column(columnIndex);
-
-  uint64_t ind = 0;
-  uint64_t selInd = 0;
-  gsl::span<int64_t const> selectedRows;
-  std::vector<std::pair<uint64_t, uint64_t>> groupedIndices;
-
-  // Separate check to account for Filtered size different from arrow table
-  if (table.size() == 0) {
-    return groupedIndices;
-  }
-
-  if constexpr (soa::is_soa_filtered_t<T>::value) {
-    selectedRows = table.getSelectedRows(); // vector<int64_t>
-  }
-
-  for (uint64_t ci = 0; ci < chunkedArray->num_chunks(); ++ci) {
-    auto chunk = chunkedArray->chunk(ci);
-    if constexpr (soa::is_soa_filtered_t<T>::value) {
-      if (selectedRows[ind] >= selInd + chunk->length()) {
-        selInd += chunk->length();
-        continue; // Go to the next chunk, no value selected in this chunk
-      }
-    }
-
-    T2 const* data = std::static_pointer_cast<ARRAY>(chunk)->raw_values();
-    uint64_t ai = 0;
-    while (ai < chunk->length()) {
-      if constexpr (soa::is_soa_filtered_t<T>::value) {
-        ai += selectedRows[ind] - selInd;
-        selInd = selectedRows[ind];
-      }
-
-      if (data[ai] != outsider) {
-        groupedIndices.emplace_back(data[ai], ind);
-      }
-      ind++;
-
-      if constexpr (soa::is_soa_filtered_t<T>::value) {
-        if (ind >= selectedRows.size()) {
-          break;
-        }
-      } else {
-        ai++;
-      }
-    }
-
-    if constexpr (soa::is_soa_filtered_t<T>::value) {
-      if (ind == selectedRows.size()) {
-        break;
-      }
-    }
-  }
-
-  // Do a stable sort so that same categories entries are
-  // grouped together.
-  std::stable_sort(groupedIndices.begin(), groupedIndices.end());
-
-  // Remove categories of too small size
-  if (minCatSize > 1) {
-    auto catBegin = groupedIndices.begin();
-    while (catBegin != groupedIndices.end()) {
-      auto catEnd = std::upper_bound(catBegin, groupedIndices.end(), *catBegin, sameCategory);
-      if (std::distance(catBegin, catEnd) < minCatSize) {
-        catEnd = groupedIndices.erase(catBegin, catEnd);
-      }
-      catBegin = catEnd;
-    }
-  }
-
-  return groupedIndices;
+  return a.bin >= b.bin;
 }
 
-template <typename BinningPolicy, typename T>
-std::vector<std::pair<uint64_t, uint64_t>> doGroupTable(const T& table, const BinningPolicy& binningPolicy, int minCatSize, int outsider)
+template <template <typename... Cs> typename BP, typename T, typename... Cs>
+std::vector<BinningIndex> groupTable(const T& table, const BP<Cs...>& binningPolicy, int minCatSize, int outsider)
 {
   arrow::Table* arrowTable = table.asArrowTable().get();
+  auto rowIterator = table.begin();
 
   uint64_t ind = 0;
   uint64_t selInd = 0;
   gsl::span<int64_t const> selectedRows;
-  std::vector<std::pair<uint64_t, uint64_t>> groupedIndices;
+  std::vector<BinningIndex> groupedIndices;
 
   // Separate check to account for Filtered size different from arrow table
   if (table.size() == 0) {
@@ -160,26 +92,24 @@ std::vector<std::pair<uint64_t, uint64_t>> doGroupTable(const T& table, const Bi
     selectedRows = table.getSelectedRows(); // vector<int64_t>
   }
 
-  auto binningColumns = binningPolicy.getColumns();
-  auto arrowColumns = o2::framework::binning_helpers::getArrowColumns(arrowTable, binningColumns);
+  auto persistentColumns = typename BP<Cs...>::persistent_columns_t{};
+  constexpr auto persistentColumnsCount = pack_size(persistentColumns);
+  auto arrowColumns = o2::soa::row_helpers::getArrowColumns(arrowTable, persistentColumns);
   auto chunksCount = arrowColumns[0]->num_chunks();
-  // TODO: Are such checks needed or can we safely assume chunks are always the same?
-  for (int i = 1; i < binningPolicy.mColumnsCount; i++) {
+  for (int i = 1; i < persistentColumnsCount; i++) {
     if (arrowColumns[i]->num_chunks() != chunksCount) {
       throw o2::framework::runtime_error("Combinations: data size varies between selected columns");
     }
   }
 
   for (uint64_t ci = 0; ci < chunksCount; ++ci) {
-    auto chunks = o2::framework::binning_helpers::getChunks(arrowTable, binningColumns, ci);
+    auto chunks = o2::soa::row_helpers::getChunks(arrowTable, persistentColumns, ci);
     auto chunkLength = std::get<0>(chunks)->length();
-    // TODO: Are such checks needed or can we safely assume chunks are always the same?
-    //constexpr auto cn = binningPolicy.mColumnsCount - 1;
-    //for_<cn>([&chunks, &chunkLength](auto i) {
-    //  if (std::get<i.value + 1>(chunks)->length() != chunkLength) {
-    //    throw o2::framework::runtime_error("Combinations: data size varies between selected columns");
-    //  }
-    //});
+    for_<persistentColumnsCount - 1>([&chunks, &chunkLength](auto i) {
+      if (std::get<i.value + 1>(chunks)->length() != chunkLength) {
+        throw o2::framework::runtime_error("Combinations: data size varies between selected columns");
+      }
+    });
 
     if constexpr (soa::is_soa_filtered_t<T>::value) {
       if (selectedRows[ind] >= selInd + chunkLength) {
@@ -195,7 +125,8 @@ std::vector<std::pair<uint64_t, uint64_t>> doGroupTable(const T& table, const Bi
         selInd = selectedRows[ind];
       }
 
-      auto rowData = o2::framework::binning_helpers::getRowData(arrowTable, binningColumns, ci, ai);
+      auto rowData = o2::soa::row_helpers::getRowData<decltype(rowIterator), Cs...>(arrowTable, rowIterator, ci, ai, ind);
+
       int val = binningPolicy.getBin(rowData);
       if (val != outsider) {
         groupedIndices.emplace_back(val, ind);
@@ -237,41 +168,12 @@ std::vector<std::pair<uint64_t, uint64_t>> doGroupTable(const T& table, const Bi
   return groupedIndices;
 }
 
-namespace old_interface
-{
-template <typename T>
-struct is_string {
-  static const bool value = false;
-};
-
-template <class T, class Traits, class Alloc>
-struct is_string<std::basic_string<T, Traits, Alloc>> {
-  static const bool value = true;
-};
-
-template <std::size_t N>
-struct is_string<char[N]> {
-  static const bool value = true;
-};
-} // namespace old_interface
-
-template <typename BinningPolicy, typename T>
-std::vector<std::pair<uint64_t, uint64_t>> groupTable(const T& table, const BinningPolicy& binningPolicy, int minCatSize, int outsider)
-{
-  if constexpr (old_interface::is_string<BinningPolicy>::value) {
-    LOG(warn) << "You are using obsolete interface for block combinations / event mixing, please update";
-    return oldGroupTable<int, arrow::Int32Array>(table, binningPolicy, minCatSize, outsider);
-  } else {
-    return doGroupTable(table, binningPolicy, minCatSize, outsider);
-  }
-}
-
 // Synchronize categories so as groupedIndices contain elements only of categories common to all tables
 template <std::size_t K>
-void syncCategories(std::array<std::vector<std::pair<uint64_t, uint64_t>>, K>& groupedIndices)
+void syncCategories(std::array<std::vector<BinningIndex>, K>& groupedIndices)
 {
-  std::vector<std::pair<uint64_t, uint64_t>> firstCategories;
-  std::vector<std::pair<uint64_t, uint64_t>> commonCategories;
+  std::vector<BinningIndex> firstCategories;
+  std::vector<BinningIndex> commonCategories;
   std::unique_copy(groupedIndices[0].begin(), groupedIndices[0].end(), std::back_inserter(firstCategories), diffCategory);
 
   for (auto& cat : firstCategories) {
@@ -512,19 +414,19 @@ struct CombinationsFullIndexPolicy : public CombinationsIndexPolicyBase<Ts...> {
 };
 
 // For upper and full only
-template <typename BinningPolicy, typename T, typename... Ts>
+template <typename BP, typename T, typename... Ts>
 struct CombinationsBlockIndexPolicyBase : public CombinationsIndexPolicyBase<Ts...> {
   using CombinationType = typename CombinationsIndexPolicyBase<Ts...>::CombinationType;
   using IndicesType = typename NTupleType<uint64_t, sizeof...(Ts)>::type;
 
-  CombinationsBlockIndexPolicyBase(const BinningPolicy& binningPolicy, int categoryNeighbours, const T& outsider) : CombinationsIndexPolicyBase<Ts...>(), mSlidingWindowSize(categoryNeighbours + 1), mBinningPolicy(binningPolicy), mCategoryNeighbours(categoryNeighbours), mOutsider(outsider) {}
-  CombinationsBlockIndexPolicyBase(const BinningPolicy& binningPolicy, int categoryNeighbours, const T& outsider, const Ts&... tables) : CombinationsIndexPolicyBase<Ts...>(tables...), mSlidingWindowSize(categoryNeighbours + 1), mBinningPolicy(binningPolicy), mCategoryNeighbours(categoryNeighbours), mOutsider(outsider)
+  CombinationsBlockIndexPolicyBase(const BP& binningPolicy, int categoryNeighbours, const T& outsider) : CombinationsIndexPolicyBase<Ts...>(), mSlidingWindowSize(categoryNeighbours + 1), mBP(binningPolicy), mCategoryNeighbours(categoryNeighbours), mOutsider(outsider) {}
+  CombinationsBlockIndexPolicyBase(const BP& binningPolicy, int categoryNeighbours, const T& outsider, const Ts&... tables) : CombinationsIndexPolicyBase<Ts...>(tables...), mSlidingWindowSize(categoryNeighbours + 1), mBP(binningPolicy), mCategoryNeighbours(categoryNeighbours), mOutsider(outsider)
   {
     if (!this->mIsEnd) {
       setRanges(tables...);
     }
   }
-  CombinationsBlockIndexPolicyBase(const BinningPolicy& binningPolicy, int categoryNeighbours, const T& outsider, Ts&&... tables) : CombinationsIndexPolicyBase<Ts...>(std::forward<Ts>(tables)...), mSlidingWindowSize(categoryNeighbours + 1), mBinningPolicy(binningPolicy), mCategoryNeighbours(categoryNeighbours), mOutsider(outsider)
+  CombinationsBlockIndexPolicyBase(const BP& binningPolicy, int categoryNeighbours, const T& outsider, Ts&&... tables) : CombinationsIndexPolicyBase<Ts...>(std::forward<Ts>(tables)...), mSlidingWindowSize(categoryNeighbours + 1), mBP(binningPolicy), mCategoryNeighbours(categoryNeighbours), mOutsider(outsider)
   {
     if (!this->mIsEnd) {
       setRanges();
@@ -551,7 +453,7 @@ struct CombinationsBlockIndexPolicyBase : public CombinationsIndexPolicyBase<Ts.
     }
 
     int tableIndex = 0;
-    ((this->mGroupedIndices[tableIndex++] = groupTable(tables, this->mBinningPolicy, 1, this->mOutsider)), ...);
+    ((this->mGroupedIndices[tableIndex++] = groupTable(tables, this->mBP, 1, this->mOutsider)), ...);
 
     // Synchronize categories across tables
     syncCategories(this->mGroupedIndices);
@@ -580,7 +482,7 @@ struct CombinationsBlockIndexPolicyBase : public CombinationsIndexPolicyBase<Ts.
 
     int tableIndex = 0;
     std::apply([&, this](auto&&... x) mutable {
-      ((this->mGroupedIndices[tableIndex++] = groupTable(x, this->mBinningPolicy, 1, this->mOutsider)), ...);
+      ((this->mGroupedIndices[tableIndex++] = groupTable(x, this->mBP, 1, this->mOutsider)), ...);
     },
                *this->mTables);
 
@@ -599,27 +501,27 @@ struct CombinationsBlockIndexPolicyBase : public CombinationsIndexPolicyBase<Ts.
     });
   }
 
-  std::array<std::vector<std::pair<uint64_t, uint64_t>>, sizeof...(Ts)> mGroupedIndices;
+  std::array<std::vector<BinningIndex>, sizeof...(Ts)> mGroupedIndices;
   IndicesType mCurrentIndices;
   IndicesType mBeginIndices;
   uint64_t mSlidingWindowSize;
-  const BinningPolicy mBinningPolicy;
+  const BP mBP;
   const int mCategoryNeighbours;
   const T mOutsider;
 };
 
-template <typename BinningPolicy, typename T, typename... Ts>
-struct CombinationsBlockUpperIndexPolicy : public CombinationsBlockIndexPolicyBase<BinningPolicy, T, Ts...> {
-  using CombinationType = typename CombinationsBlockIndexPolicyBase<BinningPolicy, T, Ts...>::CombinationType;
+template <typename BP, typename T, typename... Ts>
+struct CombinationsBlockUpperIndexPolicy : public CombinationsBlockIndexPolicyBase<BP, T, Ts...> {
+  using CombinationType = typename CombinationsBlockIndexPolicyBase<BP, T, Ts...>::CombinationType;
 
-  CombinationsBlockUpperIndexPolicy(const BinningPolicy& binningPolicy, int categoryNeighbours, const T& outsider) : CombinationsBlockIndexPolicyBase<BinningPolicy, T, Ts...>(binningPolicy, categoryNeighbours, outsider) {}
-  CombinationsBlockUpperIndexPolicy(const BinningPolicy& binningPolicy, int categoryNeighbours, const T& outsider, const Ts&... tables) : CombinationsBlockIndexPolicyBase<BinningPolicy, T, Ts...>(binningPolicy, categoryNeighbours, outsider, tables...)
+  CombinationsBlockUpperIndexPolicy(const BP& binningPolicy, int categoryNeighbours, const T& outsider) : CombinationsBlockIndexPolicyBase<BP, T, Ts...>(binningPolicy, categoryNeighbours, outsider) {}
+  CombinationsBlockUpperIndexPolicy(const BP& binningPolicy, int categoryNeighbours, const T& outsider, const Ts&... tables) : CombinationsBlockIndexPolicyBase<BP, T, Ts...>(binningPolicy, categoryNeighbours, outsider, tables...)
   {
     if (!this->mIsEnd) {
       setRanges();
     }
   }
-  CombinationsBlockUpperIndexPolicy(const BinningPolicy& binningPolicy, int categoryNeighbours, const T& outsider, Ts&&... tables) : CombinationsBlockIndexPolicyBase<BinningPolicy, T, Ts...>(binningPolicy, categoryNeighbours, outsider, std::forward<Ts>(tables)...)
+  CombinationsBlockUpperIndexPolicy(const BP& binningPolicy, int categoryNeighbours, const T& outsider, Ts&&... tables) : CombinationsBlockIndexPolicyBase<BP, T, Ts...>(binningPolicy, categoryNeighbours, outsider, std::forward<Ts>(tables)...)
   {
     if (!this->mIsEnd) {
       setRanges();
@@ -628,12 +530,12 @@ struct CombinationsBlockUpperIndexPolicy : public CombinationsBlockIndexPolicyBa
 
   void setTables(const Ts&... tables)
   {
-    CombinationsBlockIndexPolicyBase<BinningPolicy, T, Ts...>::setTables(tables...);
+    CombinationsBlockIndexPolicyBase<BP, T, Ts...>::setTables(tables...);
     setRanges();
   }
   void setTables(Ts&&... tables)
   {
-    CombinationsBlockIndexPolicyBase<BinningPolicy, T, Ts...>::setTables(std::forward<Ts>(tables)...);
+    CombinationsBlockIndexPolicyBase<BP, T, Ts...>::setTables(std::forward<Ts>(tables)...);
     setRanges();
   }
 
@@ -644,7 +546,7 @@ struct CombinationsBlockUpperIndexPolicy : public CombinationsBlockIndexPolicyBa
       auto catBegin = this->mGroupedIndices[i.value].begin() + std::get<i.value>(this->mCurrentIndices);
       auto range = std::equal_range(catBegin, this->mGroupedIndices[i.value].end(), *catBegin, sameCategory);
       std::get<i.value>(this->mBeginIndices) = std::distance(this->mGroupedIndices[i.value].begin(), range.first);
-      std::get<i.value>(this->mCurrent).setCursor(range.first->second);
+      std::get<i.value>(this->mCurrent).setCursor(range.first->index);
       std::get<i.value>(this->mMaxOffset) = std::distance(this->mGroupedIndices[i.value].begin(), range.second);
     });
   }
@@ -663,14 +565,14 @@ struct CombinationsBlockUpperIndexPolicy : public CombinationsBlockIndexPolicyBa
 
         // If we remain within the same sliding window
         if (curGroupedInd < maxForWindow && curGroupedInd < std::get<curInd>(this->mMaxOffset)) {
-          std::get<curInd>(this->mCurrent).setCursor(this->mGroupedIndices[curInd][curGroupedInd].second);
+          std::get<curInd>(this->mCurrent).setCursor(this->mGroupedIndices[curInd][curGroupedInd].index);
           modify = false;
           for_<i.value>([&, this](auto j) {
             constexpr auto curJ = k - i.value + j.value;
             if (std::get<curJ - 1>(this->mCurrentIndices) < std::get<curJ>(this->mMaxOffset)) {
               std::get<curJ>(this->mCurrentIndices) = std::get<curJ - 1>(this->mCurrentIndices);
               uint64_t curGroupedJ = std::get<curJ>(this->mCurrentIndices);
-              std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curJ][curGroupedJ].second);
+              std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curJ][curGroupedJ].index);
             } else {
               modify = true;
             }
@@ -687,7 +589,7 @@ struct CombinationsBlockUpperIndexPolicy : public CombinationsBlockIndexPolicyBa
 
       // If we remain within the same category - slide window
       if (curGroupedInd < std::get<0>(this->mMaxOffset)) {
-        std::get<0>(this->mCurrent).setCursor(this->mGroupedIndices[0][curGroupedInd].second);
+        std::get<0>(this->mCurrent).setCursor(this->mGroupedIndices[0][curGroupedInd].index);
         modify = false;
         for_<k - 1>([&, this](auto j) {
           constexpr auto curJ = j.value + 1;
@@ -695,7 +597,7 @@ struct CombinationsBlockUpperIndexPolicy : public CombinationsBlockIndexPolicyBa
           if (std::get<curJ>(this->mBeginIndices) < std::get<curJ>(this->mMaxOffset)) {
             std::get<curJ>(this->mCurrentIndices) = std::get<curJ>(this->mBeginIndices);
             uint64_t curGroupedJ = std::get<curJ>(this->mCurrentIndices);
-            std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curJ][curGroupedJ].second);
+            std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curJ][curGroupedJ].index);
           } else {
             modify = true;
           }
@@ -720,19 +622,19 @@ struct CombinationsBlockUpperIndexPolicy : public CombinationsBlockIndexPolicyBa
   }
 };
 
-template <typename BinningPolicy, typename T, typename... Ts>
-struct CombinationsBlockFullIndexPolicy : public CombinationsBlockIndexPolicyBase<BinningPolicy, T, Ts...> {
-  using CombinationType = typename CombinationsBlockIndexPolicyBase<BinningPolicy, T, Ts...>::CombinationType;
+template <typename BP, typename T, typename... Ts>
+struct CombinationsBlockFullIndexPolicy : public CombinationsBlockIndexPolicyBase<BP, T, Ts...> {
+  using CombinationType = typename CombinationsBlockIndexPolicyBase<BP, T, Ts...>::CombinationType;
   using IndicesType = typename NTupleType<uint64_t, sizeof...(Ts)>::type;
 
-  CombinationsBlockFullIndexPolicy(const BinningPolicy& binningPolicy, int categoryNeighbours, const T& outsider) : CombinationsBlockIndexPolicyBase<BinningPolicy, T, Ts...>(binningPolicy, categoryNeighbours, outsider), mCurrentlyFixed(0) {}
-  CombinationsBlockFullIndexPolicy(const BinningPolicy& binningPolicy, int categoryNeighbours, const T& outsider, const Ts&... tables) : CombinationsBlockIndexPolicyBase<BinningPolicy, T, Ts...>(binningPolicy, categoryNeighbours, outsider, tables...), mCurrentlyFixed(0)
+  CombinationsBlockFullIndexPolicy(const BP& binningPolicy, int categoryNeighbours, const T& outsider) : CombinationsBlockIndexPolicyBase<BP, T, Ts...>(binningPolicy, categoryNeighbours, outsider), mCurrentlyFixed(0) {}
+  CombinationsBlockFullIndexPolicy(const BP& binningPolicy, int categoryNeighbours, const T& outsider, const Ts&... tables) : CombinationsBlockIndexPolicyBase<BP, T, Ts...>(binningPolicy, categoryNeighbours, outsider, tables...), mCurrentlyFixed(0)
   {
     if (!this->mIsEnd) {
       setRanges();
     }
   }
-  CombinationsBlockFullIndexPolicy(const BinningPolicy& binningPolicy, int categoryNeighbours, const T& outsider, Ts&&... tables) : CombinationsBlockIndexPolicyBase<BinningPolicy, T, Ts...>(binningPolicy, categoryNeighbours, outsider, std::forward<Ts>(tables)...), mCurrentlyFixed(0)
+  CombinationsBlockFullIndexPolicy(const BP& binningPolicy, int categoryNeighbours, const T& outsider, Ts&&... tables) : CombinationsBlockIndexPolicyBase<BP, T, Ts...>(binningPolicy, categoryNeighbours, outsider, std::forward<Ts>(tables)...), mCurrentlyFixed(0)
   {
     if (!this->mIsEnd) {
       setRanges();
@@ -741,12 +643,12 @@ struct CombinationsBlockFullIndexPolicy : public CombinationsBlockIndexPolicyBas
 
   void setTables(const Ts&... tables)
   {
-    CombinationsBlockIndexPolicyBase<BinningPolicy, T, Ts...>::setTables(tables...);
+    CombinationsBlockIndexPolicyBase<BP, T, Ts...>::setTables(tables...);
     setRanges();
   }
   void setTables(Ts&&... tables)
   {
-    CombinationsBlockIndexPolicyBase<BinningPolicy, T, Ts...>::setTables(std::forward<Ts>(tables)...);
+    CombinationsBlockIndexPolicyBase<BP, T, Ts...>::setTables(std::forward<Ts>(tables)...);
     setRanges();
   }
 
@@ -758,7 +660,7 @@ struct CombinationsBlockFullIndexPolicy : public CombinationsBlockIndexPolicyBas
       auto range = std::equal_range(catBegin, this->mGroupedIndices[i.value].end(), *catBegin, sameCategory);
       std::get<i.value>(this->mBeginIndices) = std::distance(this->mGroupedIndices[i.value].begin(), range.first);
       std::get<i.value>(this->mMaxOffset) = std::distance(this->mGroupedIndices[i.value].begin(), range.second);
-      std::get<i.value>(this->mCurrent).setCursor(range.first->second);
+      std::get<i.value>(this->mCurrent).setCursor(range.first->index);
     });
   }
 
@@ -777,7 +679,7 @@ struct CombinationsBlockFullIndexPolicy : public CombinationsBlockIndexPolicyBas
 
         // If we remain within the same sliding window and fixed index
         if (curGroupedInd < maxForWindow && curGroupedInd < std::get<curInd>(this->mMaxOffset)) {
-          std::get<curInd>(this->mCurrent).setCursor(this->mGroupedIndices[curInd][curGroupedInd].second);
+          std::get<curInd>(this->mCurrent).setCursor(this->mGroupedIndices[curInd][curGroupedInd].index);
           for_<i.value>([&, this](auto j) {
             constexpr auto curJ = k - i.value + j.value;
             if (curJ < this->mCurrentlyFixed) { // To assure no repetitions
@@ -786,7 +688,7 @@ struct CombinationsBlockFullIndexPolicy : public CombinationsBlockIndexPolicyBas
               std::get<curJ>(this->mCurrentIndices) = std::get<curJ>(this->mBeginIndices);
             }
             uint64_t curGroupedJ = std::get<curJ>(this->mCurrentIndices);
-            std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curJ][curGroupedJ].second);
+            std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curJ][curGroupedJ].index);
           });
           modify = false;
         }
@@ -805,7 +707,7 @@ struct CombinationsBlockFullIndexPolicy : public CombinationsBlockIndexPolicyBas
             std::get<s.value>(this->mCurrentIndices) = std::get<s.value>(this->mBeginIndices);
           }
           uint64_t curGroupedI = std::get<s.value>(this->mCurrentIndices);
-          std::get<s.value>(this->mCurrent).setCursor(this->mGroupedIndices[s.value][curGroupedI].second);
+          std::get<s.value>(this->mCurrent).setCursor(this->mGroupedIndices[s.value][curGroupedI].index);
         });
         modify = false;
       } else {
@@ -816,7 +718,7 @@ struct CombinationsBlockFullIndexPolicy : public CombinationsBlockIndexPolicyBas
         // If we remain within the same category - slide window
         if (std::get<0>(this->mBeginIndices) < std::get<0>(this->mMaxOffset)) {
           uint64_t curGroupedInd = std::get<0>(this->mCurrentIndices);
-          std::get<0>(this->mCurrent).setCursor(this->mGroupedIndices[0][curGroupedInd].second);
+          std::get<0>(this->mCurrent).setCursor(this->mGroupedIndices[0][curGroupedInd].index);
           modify = false;
           for_<k - 1>([&, this](auto j) {
             constexpr auto curJ = j.value + 1;
@@ -824,7 +726,7 @@ struct CombinationsBlockFullIndexPolicy : public CombinationsBlockIndexPolicyBas
             if (std::get<curJ>(this->mBeginIndices) < std::get<curJ>(this->mMaxOffset)) {
               std::get<curJ>(this->mCurrentIndices) = std::get<curJ>(this->mBeginIndices);
               uint64_t curGroupedJ = std::get<curJ>(this->mCurrentIndices);
-              std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curJ][curGroupedJ].second);
+              std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curJ][curGroupedJ].index);
             } else {
               modify = true;
             }
@@ -852,19 +754,19 @@ struct CombinationsBlockFullIndexPolicy : public CombinationsBlockIndexPolicyBas
   uint64_t mCurrentlyFixed;
 };
 
-template <typename BinningPolicy, typename T1, typename T, typename... Ts>
+template <typename BP, typename T1, typename T, typename... Ts>
 struct CombinationsBlockSameIndexPolicyBase : public CombinationsIndexPolicyBase<T, Ts...> {
   using CombinationType = typename CombinationsIndexPolicyBase<T, Ts...>::CombinationType;
   using IndicesType = typename NTupleType<uint64_t, sizeof...(Ts) + 1>::type;
 
-  CombinationsBlockSameIndexPolicyBase(const BinningPolicy& binningPolicy, int categoryNeighbours, const T1& outsider, int minWindowSize) : CombinationsIndexPolicyBase<T, Ts...>(), mSlidingWindowSize(categoryNeighbours + 1), mBinningPolicy(binningPolicy), mCategoryNeighbours(categoryNeighbours), mOutsider(outsider), mMinWindowSize(minWindowSize) {}
-  CombinationsBlockSameIndexPolicyBase(const BinningPolicy& binningPolicy, int categoryNeighbours, const T1& outsider, int minWindowSize, const T& table, const Ts&... tables) : CombinationsIndexPolicyBase<T, Ts...>(table, tables...), mSlidingWindowSize(categoryNeighbours + 1), mBinningPolicy(binningPolicy), mCategoryNeighbours(categoryNeighbours), mOutsider(outsider), mMinWindowSize(minWindowSize)
+  CombinationsBlockSameIndexPolicyBase(const BP& binningPolicy, int categoryNeighbours, const T1& outsider, int minWindowSize) : CombinationsIndexPolicyBase<T, Ts...>(), mSlidingWindowSize(categoryNeighbours + 1), mBP(binningPolicy), mCategoryNeighbours(categoryNeighbours), mOutsider(outsider), mMinWindowSize(minWindowSize) {}
+  CombinationsBlockSameIndexPolicyBase(const BP& binningPolicy, int categoryNeighbours, const T1& outsider, int minWindowSize, const T& table, const Ts&... tables) : CombinationsIndexPolicyBase<T, Ts...>(table, tables...), mSlidingWindowSize(categoryNeighbours + 1), mBP(binningPolicy), mCategoryNeighbours(categoryNeighbours), mOutsider(outsider), mMinWindowSize(minWindowSize)
   {
     if (!this->mIsEnd) {
       setRanges(table);
     }
   }
-  CombinationsBlockSameIndexPolicyBase(const BinningPolicy& binningPolicy, int categoryNeighbours, const T1& outsider, int minWindowSize, T&& table, Ts&&... tables) : CombinationsIndexPolicyBase<T, Ts...>(std::forward<T>(table), std::forward<Ts>(tables)...), mSlidingWindowSize(categoryNeighbours + 1), mBinningPolicy(binningPolicy), mCategoryNeighbours(categoryNeighbours), mOutsider(outsider), mMinWindowSize(minWindowSize)
+  CombinationsBlockSameIndexPolicyBase(const BP& binningPolicy, int categoryNeighbours, const T1& outsider, int minWindowSize, T&& table, Ts&&... tables) : CombinationsIndexPolicyBase<T, Ts...>(std::forward<T>(table), std::forward<Ts>(tables)...), mSlidingWindowSize(categoryNeighbours + 1), mBP(binningPolicy), mCategoryNeighbours(categoryNeighbours), mOutsider(outsider), mMinWindowSize(minWindowSize)
   {
     if (!this->mIsEnd) {
       setRanges();
@@ -895,7 +797,7 @@ struct CombinationsBlockSameIndexPolicyBase : public CombinationsIndexPolicyBase
       return;
     }
 
-    this->mGroupedIndices = groupTable(table, mBinningPolicy, mMinWindowSize, mOutsider);
+    this->mGroupedIndices = groupTable(table, mBP, mMinWindowSize, mOutsider);
 
     if (this->mGroupedIndices.size() == 0) {
       this->mIsEnd = true;
@@ -913,7 +815,7 @@ struct CombinationsBlockSameIndexPolicyBase : public CombinationsIndexPolicyBase
       return;
     }
 
-    this->mGroupedIndices = groupTable(std::get<0>(*this->mTables), mBinningPolicy, mMinWindowSize, mOutsider);
+    this->mGroupedIndices = groupTable(std::get<0>(*this->mTables), mBP, mMinWindowSize, mOutsider);
 
     if (this->mGroupedIndices.size() == 0) {
       this->mIsEnd = true;
@@ -923,27 +825,27 @@ struct CombinationsBlockSameIndexPolicyBase : public CombinationsIndexPolicyBase
     std::get<0>(this->mCurrentIndices) = 0;
   }
 
-  std::vector<std::pair<uint64_t, uint64_t>> mGroupedIndices;
+  std::vector<BinningIndex> mGroupedIndices;
   IndicesType mCurrentIndices;
   const uint64_t mSlidingWindowSize;
   const int mMinWindowSize;
-  const BinningPolicy mBinningPolicy;
+  const BP mBP;
   const int mCategoryNeighbours;
   const T1 mOutsider;
 };
 
-template <typename BinningPolicy, typename T1, typename... Ts>
-struct CombinationsBlockUpperSameIndexPolicy : public CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...> {
-  using CombinationType = typename CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...>::CombinationType;
+template <typename BP, typename T1, typename... Ts>
+struct CombinationsBlockUpperSameIndexPolicy : public CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...> {
+  using CombinationType = typename CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...>::CombinationType;
 
-  CombinationsBlockUpperSameIndexPolicy(const BinningPolicy& binningPolicy, int categoryNeighbours, const T1& outsider) : CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...>(binningPolicy, categoryNeighbours, outsider, 1) {}
-  CombinationsBlockUpperSameIndexPolicy(const BinningPolicy& binningPolicy, int categoryNeighbours, const T1& outsider, const Ts&... tables) : CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...>(binningPolicy, categoryNeighbours, outsider, 1, tables...)
+  CombinationsBlockUpperSameIndexPolicy(const BP& binningPolicy, int categoryNeighbours, const T1& outsider) : CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...>(binningPolicy, categoryNeighbours, outsider, 1) {}
+  CombinationsBlockUpperSameIndexPolicy(const BP& binningPolicy, int categoryNeighbours, const T1& outsider, const Ts&... tables) : CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...>(binningPolicy, categoryNeighbours, outsider, 1, tables...)
   {
     if (!this->mIsEnd) {
       setRanges();
     }
   }
-  CombinationsBlockUpperSameIndexPolicy(const BinningPolicy& binningPolicy, int categoryNeighbours, const T1& outsider, Ts&&... tables) : CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...>(binningPolicy, categoryNeighbours, outsider, 1, std::forward<Ts>(tables)...)
+  CombinationsBlockUpperSameIndexPolicy(const BP& binningPolicy, int categoryNeighbours, const T1& outsider, Ts&&... tables) : CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...>(binningPolicy, categoryNeighbours, outsider, 1, std::forward<Ts>(tables)...)
   {
     if (!this->mIsEnd) {
       setRanges();
@@ -952,12 +854,12 @@ struct CombinationsBlockUpperSameIndexPolicy : public CombinationsBlockSameIndex
 
   void setTables(const Ts&... tables)
   {
-    CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...>::setTables(tables...);
+    CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...>::setTables(tables...);
     setRanges();
   }
   void setTables(Ts&&... tables)
   {
-    CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...>::setTables(std::forward<Ts>(tables)...);
+    CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...>::setTables(std::forward<Ts>(tables)...);
     setRanges();
   }
 
@@ -971,7 +873,7 @@ struct CombinationsBlockUpperSameIndexPolicy : public CombinationsBlockSameIndex
     for_<k>([&, this](auto i) {
       std::get<i.value>(this->mCurrentIndices) = std::get<0>(this->mCurrentIndices);
       std::get<i.value>(this->mMaxOffset) = offset;
-      std::get<i.value>(this->mCurrent).setCursor(range.first->second);
+      std::get<i.value>(this->mCurrent).setCursor(range.first->index);
     });
   }
 
@@ -988,12 +890,12 @@ struct CombinationsBlockUpperSameIndexPolicy : public CombinationsBlockSameIndex
 
         // If we remain within the same sliding window
         if (curGroupedInd < maxForWindow && curGroupedInd < std::get<curInd>(this->mMaxOffset)) {
-          std::get<curInd>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedInd].second);
+          std::get<curInd>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedInd].index);
           for_<i.value>([&, this](auto j) {
             constexpr auto curJ = k - i.value + j.value;
             std::get<curJ>(this->mCurrentIndices) = std::get<curJ - 1>(this->mCurrentIndices);
             uint64_t curGroupedJ = std::get<curJ>(this->mCurrentIndices);
-            std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedJ].second);
+            std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedJ].index);
           });
           modify = false;
         }
@@ -1007,12 +909,12 @@ struct CombinationsBlockUpperSameIndexPolicy : public CombinationsBlockSameIndex
 
       // If we remain within the same category - slide window
       if (curGroupedInd < std::get<0>(this->mMaxOffset)) {
-        std::get<0>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedInd].second);
+        std::get<0>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedInd].index);
         for_<k - 1>([&, this](auto j) {
           constexpr auto curJ = j.value + 1;
           std::get<curJ>(this->mCurrentIndices) = std::get<curJ - 1>(this->mCurrentIndices);
           uint64_t curGroupedJ = std::get<curJ>(this->mCurrentIndices);
-          std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedJ].second);
+          std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedJ].index);
         });
         modify = false;
       }
@@ -1028,19 +930,19 @@ struct CombinationsBlockUpperSameIndexPolicy : public CombinationsBlockSameIndex
   }
 };
 
-template <typename BinningPolicy, typename T1, typename... Ts>
-struct CombinationsBlockStrictlyUpperSameIndexPolicy : public CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...> {
-  using CombinationType = typename CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...>::CombinationType;
+template <typename BP, typename T1, typename... Ts>
+struct CombinationsBlockStrictlyUpperSameIndexPolicy : public CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...> {
+  using CombinationType = typename CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...>::CombinationType;
 
-  CombinationsBlockStrictlyUpperSameIndexPolicy(const BinningPolicy& binningPolicy, int categoryNeighbours, const T1& outsider) : CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...>(binningPolicy, categoryNeighbours, outsider, sizeof...(Ts)) {}
-  CombinationsBlockStrictlyUpperSameIndexPolicy(const BinningPolicy& binningPolicy, int categoryNeighbours, const T1& outsider, const Ts&... tables) : CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...>(binningPolicy, categoryNeighbours, outsider, sizeof...(Ts), tables...)
+  CombinationsBlockStrictlyUpperSameIndexPolicy(const BP& binningPolicy, int categoryNeighbours, const T1& outsider) : CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...>(binningPolicy, categoryNeighbours, outsider, sizeof...(Ts)) {}
+  CombinationsBlockStrictlyUpperSameIndexPolicy(const BP& binningPolicy, int categoryNeighbours, const T1& outsider, const Ts&... tables) : CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...>(binningPolicy, categoryNeighbours, outsider, sizeof...(Ts), tables...)
   {
     if (!this->mIsEnd) {
       setRanges();
     }
   }
 
-  CombinationsBlockStrictlyUpperSameIndexPolicy(const BinningPolicy& binningPolicy, int categoryNeighbours, const T1& outsider, Ts&&... tables) : CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...>(binningPolicy, categoryNeighbours, outsider, sizeof...(Ts), std::forward<Ts>(tables)...)
+  CombinationsBlockStrictlyUpperSameIndexPolicy(const BP& binningPolicy, int categoryNeighbours, const T1& outsider, Ts&&... tables) : CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...>(binningPolicy, categoryNeighbours, outsider, sizeof...(Ts), std::forward<Ts>(tables)...)
   {
     if (!this->mIsEnd) {
       setRanges();
@@ -1049,14 +951,14 @@ struct CombinationsBlockStrictlyUpperSameIndexPolicy : public CombinationsBlockS
 
   void setTables(const Ts&... tables)
   {
-    CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...>::setTables(tables...);
+    CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...>::setTables(tables...);
     if (!this->mIsEnd) {
       setRanges();
     }
   }
   void setTables(Ts&&... tables)
   {
-    CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...>::setTables(std::forward<Ts>(tables)...);
+    CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...>::setTables(std::forward<Ts>(tables)...);
     if (!this->mIsEnd) {
       setRanges();
     }
@@ -1071,7 +973,7 @@ struct CombinationsBlockStrictlyUpperSameIndexPolicy : public CombinationsBlockS
 
     for_<k>([&, this](auto i) {
       std::get<i.value>(this->mCurrentIndices) = std::get<0>(this->mCurrentIndices) + i.value;
-      std::get<i.value>(this->mCurrent).setCursor(this->mGroupedIndices[std::get<i.value>(this->mCurrentIndices)].second);
+      std::get<i.value>(this->mCurrent).setCursor(this->mGroupedIndices[std::get<i.value>(this->mCurrentIndices)].index);
       std::get<i.value>(this->mMaxOffset) = lastOffset - k + i.value + 1;
     });
   }
@@ -1089,12 +991,12 @@ struct CombinationsBlockStrictlyUpperSameIndexPolicy : public CombinationsBlockS
 
         // If we remain within the same sliding window
         if (curGroupedInd < maxForWindow && curGroupedInd < std::get<curInd>(this->mMaxOffset)) {
-          std::get<curInd>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedInd].second);
+          std::get<curInd>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedInd].index);
           for_<i.value>([&, this](auto j) {
             constexpr auto curJ = k - i.value + j.value;
             std::get<curJ>(this->mCurrentIndices) = std::get<curJ - 1>(this->mCurrentIndices) + 1;
             uint64_t curGroupedJ = std::get<curJ>(this->mCurrentIndices);
-            std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedJ].second);
+            std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedJ].index);
           });
           modify = false;
         }
@@ -1108,12 +1010,12 @@ struct CombinationsBlockStrictlyUpperSameIndexPolicy : public CombinationsBlockS
 
       // If we remain within the same category - slide window
       if (curGroupedInd < std::get<0>(this->mMaxOffset)) {
-        std::get<0>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedInd].second);
+        std::get<0>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedInd].index);
         for_<k - 1>([&, this](auto j) {
           constexpr auto curJ = j.value + 1;
           std::get<curJ>(this->mCurrentIndices) = std::get<curJ - 1>(this->mCurrentIndices) + 1;
           uint64_t curGroupedJ = std::get<curJ>(this->mCurrentIndices);
-          std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedJ].second);
+          std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedJ].index);
         });
         modify = false;
       }
@@ -1132,18 +1034,18 @@ struct CombinationsBlockStrictlyUpperSameIndexPolicy : public CombinationsBlockS
   }
 };
 
-template <typename BinningPolicy, typename T1, typename... Ts>
-struct CombinationsBlockFullSameIndexPolicy : public CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...> {
-  using CombinationType = typename CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...>::CombinationType;
+template <typename BP, typename T1, typename... Ts>
+struct CombinationsBlockFullSameIndexPolicy : public CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...> {
+  using CombinationType = typename CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...>::CombinationType;
 
-  CombinationsBlockFullSameIndexPolicy(const BinningPolicy& binningPolicy, int categoryNeighbours, const T1& outsider) : CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...>(binningPolicy, categoryNeighbours, outsider, 1), mCurrentlyFixed(0) {}
-  CombinationsBlockFullSameIndexPolicy(const BinningPolicy& binningPolicy, int categoryNeighbours, const T1& outsider, const Ts&... tables) : CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...>(binningPolicy, categoryNeighbours, outsider, 1, tables...), mCurrentlyFixed(0)
+  CombinationsBlockFullSameIndexPolicy(const BP& binningPolicy, int categoryNeighbours, const T1& outsider) : CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...>(binningPolicy, categoryNeighbours, outsider, 1), mCurrentlyFixed(0) {}
+  CombinationsBlockFullSameIndexPolicy(const BP& binningPolicy, int categoryNeighbours, const T1& outsider, const Ts&... tables) : CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...>(binningPolicy, categoryNeighbours, outsider, 1, tables...), mCurrentlyFixed(0)
   {
     if (!this->mIsEnd) {
       setRanges();
     }
   }
-  CombinationsBlockFullSameIndexPolicy(const BinningPolicy& binningPolicy, int categoryNeighbours, const T1& outsider, Ts&&... tables) : CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...>(binningPolicy, categoryNeighbours, outsider, 1, std::forward<Ts>(tables)...), mCurrentlyFixed(0)
+  CombinationsBlockFullSameIndexPolicy(const BP& binningPolicy, int categoryNeighbours, const T1& outsider, Ts&&... tables) : CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...>(binningPolicy, categoryNeighbours, outsider, 1, std::forward<Ts>(tables)...), mCurrentlyFixed(0)
   {
     if (!this->mIsEnd) {
       setRanges();
@@ -1152,12 +1054,12 @@ struct CombinationsBlockFullSameIndexPolicy : public CombinationsBlockSameIndexP
 
   void setTables(const Ts&... tables)
   {
-    CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...>::setTables(tables...);
+    CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...>::setTables(tables...);
     setRanges();
   }
   void setTables(Ts&&... tables)
   {
-    CombinationsBlockSameIndexPolicyBase<BinningPolicy, T1, Ts...>::setTables(std::forward<Ts>(tables)...);
+    CombinationsBlockSameIndexPolicyBase<BP, T1, Ts...>::setTables(std::forward<Ts>(tables)...);
     setRanges();
   }
 
@@ -1172,7 +1074,7 @@ struct CombinationsBlockFullSameIndexPolicy : public CombinationsBlockSameIndexP
     for_<k>([&, this](auto i) {
       std::get<i.value>(this->mMaxOffset) = offset;
       std::get<i.value>(this->mCurrentIndices) = this->mBeginIndex;
-      std::get<i.value>(this->mCurrent).setCursor(range.first->second);
+      std::get<i.value>(this->mCurrent).setCursor(range.first->index);
     });
   }
 
@@ -1190,7 +1092,7 @@ struct CombinationsBlockFullSameIndexPolicy : public CombinationsBlockSameIndexP
 
         // If we remain within the same sliding window and fixed index
         if (curGroupedInd < maxForWindow && curGroupedInd < std::get<curInd>(this->mMaxOffset)) {
-          std::get<curInd>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedInd].second);
+          std::get<curInd>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedInd].index);
           for_<i.value>([&, this](auto j) {
             constexpr auto curJ = k - i.value + j.value;
             if (curJ < this->mCurrentlyFixed) { // To assure no repetitions
@@ -1199,7 +1101,7 @@ struct CombinationsBlockFullSameIndexPolicy : public CombinationsBlockSameIndexP
               std::get<curJ>(this->mCurrentIndices) = this->mBeginIndex;
             }
             uint64_t curGroupedJ = std::get<curJ>(this->mCurrentIndices);
-            std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedJ].second);
+            std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedJ].index);
           });
           modify = false;
         }
@@ -1218,7 +1120,7 @@ struct CombinationsBlockFullSameIndexPolicy : public CombinationsBlockSameIndexP
             std::get<s.value>(this->mCurrentIndices) = this->mBeginIndex;
           }
           uint64_t curGroupedI = std::get<s.value>(this->mCurrentIndices);
-          std::get<s.value>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedI].second);
+          std::get<s.value>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedI].index);
         });
         modify = false;
       } else {
@@ -1229,12 +1131,12 @@ struct CombinationsBlockFullSameIndexPolicy : public CombinationsBlockSameIndexP
         // If we remain within the same category - slide window
         if (this->mBeginIndex < std::get<0>(this->mMaxOffset)) {
           uint64_t curGroupedInd = std::get<0>(this->mCurrentIndices);
-          std::get<0>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedInd].second);
+          std::get<0>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedInd].index);
           for_<k - 1>([&, this](auto j) {
             constexpr auto curJ = j.value + 1;
             std::get<curJ>(this->mCurrentIndices) = this->mBeginIndex;
             uint64_t curGroupedJ = std::get<curJ>(this->mCurrentIndices);
-            std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedJ].second);
+            std::get<curJ>(this->mCurrent).setCursor(this->mGroupedIndices[curGroupedJ].index);
           });
           modify = false;
         } else {
@@ -1265,7 +1167,7 @@ struct CombinationsGenerator {
   using CombinationType = typename P::CombinationType;
 
  public:
-  struct CombinationsIterator : public std::iterator<std::forward_iterator_tag, CombinationType>, public P {
+  struct CombinationsIterator : public P {
    public:
     using reference = CombinationType&;
     using value_type = CombinationType;
@@ -1348,97 +1250,54 @@ constexpr bool isSameType()
   return std::conjunction_v<std::is_same<T2, T2s>...>;
 }
 
-template <typename BinningPolicy, typename T1, typename... T2s>
-auto selfCombinations(const BinningPolicy& binningPolicy, int categoryNeighbours, const T1& outsider, const T2s&... tables)
+template <typename BP, typename T1, typename... T2s>
+auto selfCombinations(const BP& binningPolicy, int categoryNeighbours, const T1& outsider, const T2s&... tables)
 {
   static_assert(isSameType<T2s...>(), "Tables must have the same type for self combinations");
-  if constexpr (old_interface::is_string<BinningPolicy>::value) {
-    LOG(warn) << "You are using obsolete interface for block combinations / event mixing, please update";
-    return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<std::string, T1, T2s...>>(CombinationsBlockStrictlyUpperSameIndexPolicy<std::string, T1, T2s...>(std::string(binningPolicy), categoryNeighbours, outsider, tables...));
+  return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<BP, T1, T2s...>>(CombinationsBlockStrictlyUpperSameIndexPolicy<BP, T1, T2s...>(binningPolicy, categoryNeighbours, outsider, tables...));
+}
+
+template <typename BP, typename T1, typename T2>
+auto selfPairCombinations(const BP& binningPolicy, int categoryNeighbours, const T1& outsider)
+{
+  return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<BP, T1, T2, T2>>(CombinationsBlockStrictlyUpperSameIndexPolicy<BP, T1, T2, T2>(binningPolicy, categoryNeighbours, outsider));
+}
+
+template <typename BP, typename T1, typename T2>
+auto selfPairCombinations(const BP& binningPolicy, int categoryNeighbours, const T1& outsider, const T2& table)
+{
+  return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<BP, T1, T2, T2>>(CombinationsBlockStrictlyUpperSameIndexPolicy<BP, T1, T2, T2>(binningPolicy, categoryNeighbours, outsider, table, table));
+}
+
+template <typename BP, typename T1, typename T2>
+auto selfTripleCombinations(const BP& binningPolicy, int categoryNeighbours, const T1& outsider)
+{
+  return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<BP, T1, T2, T2, T2>>(CombinationsBlockStrictlyUpperSameIndexPolicy<BP, T1, T2, T2, T2>(binningPolicy, categoryNeighbours, outsider));
+}
+
+template <typename BP, typename T1, typename T2>
+auto selfTripleCombinations(const BP& binningPolicy, int categoryNeighbours, const T1& outsider, const T2& table)
+{
+  return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<BP, T1, T2, T2, T2>>(CombinationsBlockStrictlyUpperSameIndexPolicy<BP, T1, T2, T2, T2>(binningPolicy, categoryNeighbours, outsider, table, table, table));
+}
+
+template <typename BP, typename T1, typename... T2s>
+auto combinations(const BP& binningPolicy, int categoryNeighbours, const T1& outsider, const T2s&... tables)
+{
+  if constexpr (isSameType<T2s...>()) {
+    return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<BP, T1, T2s...>>(CombinationsBlockStrictlyUpperSameIndexPolicy<BP, T1, T2s...>(binningPolicy, categoryNeighbours, outsider, tables...));
   } else {
-    return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<BinningPolicy, T1, T2s...>>(CombinationsBlockStrictlyUpperSameIndexPolicy<BinningPolicy, T1, T2s...>(binningPolicy, categoryNeighbours, outsider, tables...));
+    return CombinationsGenerator<CombinationsBlockUpperIndexPolicy<BP, T1, T2s...>>(CombinationsBlockUpperIndexPolicy<BP, T1, T2s...>(binningPolicy, categoryNeighbours, outsider, tables...));
   }
 }
 
-template <typename BinningPolicy, typename T1, typename T2>
-auto selfPairCombinations(const BinningPolicy& binningPolicy, int categoryNeighbours, const T1& outsider)
+template <typename BP, typename T1, typename... T2s>
+auto combinations(const BP& binningPolicy, int categoryNeighbours, const T1& outsider, const o2::framework::expressions::Filter& filter, const T2s&... tables)
 {
-  if constexpr (old_interface::is_string<BinningPolicy>::value) {
-    LOG(warn) << "You are using obsolete interface for block combinations / event mixing, please update";
-    return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<std::string, T1, T2, T2>>(CombinationsBlockStrictlyUpperSameIndexPolicy<std::string, T1, T2, T2>(std::string(binningPolicy), categoryNeighbours, outsider));
+  if constexpr (isSameType<T2s...>()) {
+    return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<BP, T1, Filtered<T2s>...>>(CombinationsBlockStrictlyUpperSameIndexPolicy(binningPolicy, categoryNeighbours, outsider, tables.select(filter)...));
   } else {
-    return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<BinningPolicy, T1, T2, T2>>(CombinationsBlockStrictlyUpperSameIndexPolicy<BinningPolicy, T1, T2, T2>(binningPolicy, categoryNeighbours, outsider));
-  }
-}
-
-template <typename BinningPolicy, typename T1, typename T2>
-auto selfPairCombinations(const BinningPolicy& binningPolicy, int categoryNeighbours, const T1& outsider, const T2& table)
-{
-  if constexpr (old_interface::is_string<BinningPolicy>::value) {
-    LOG(warn) << "You are using obsolete interface for block combinations / event mixing, please update";
-    return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<std::string, T1, T2, T2>>(CombinationsBlockStrictlyUpperSameIndexPolicy<std::string, T1, T2, T2>(std::string(binningPolicy), categoryNeighbours, outsider, table, table));
-  } else {
-    return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<BinningPolicy, T1, T2, T2>>(CombinationsBlockStrictlyUpperSameIndexPolicy<BinningPolicy, T1, T2, T2>(binningPolicy, categoryNeighbours, outsider, table, table));
-  }
-}
-
-template <typename BinningPolicy, typename T1, typename T2>
-auto selfTripleCombinations(const BinningPolicy& binningPolicy, int categoryNeighbours, const T1& outsider)
-{
-  if constexpr (old_interface::is_string<BinningPolicy>::value) {
-    LOG(warn) << "You are using obsolete interface for block combinations / event mixing, please update";
-    return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<std::string, T1, T2, T2, T2>>(CombinationsBlockStrictlyUpperSameIndexPolicy<std::string, T1, T2, T2, T2>(std::string(binningPolicy), categoryNeighbours, outsider));
-  } else {
-    return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<BinningPolicy, T1, T2, T2, T2>>(CombinationsBlockStrictlyUpperSameIndexPolicy<BinningPolicy, T1, T2, T2, T2>(binningPolicy, categoryNeighbours, outsider));
-  }
-}
-
-template <typename BinningPolicy, typename T1, typename T2>
-auto selfTripleCombinations(const BinningPolicy& binningPolicy, int categoryNeighbours, const T1& outsider, const T2& table)
-{
-  if constexpr (old_interface::is_string<BinningPolicy>::value) {
-    LOG(warn) << "You are using obsolete interface for block combinations / event mixing, please update";
-    return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<std::string, T1, T2, T2, T2>>(CombinationsBlockStrictlyUpperSameIndexPolicy<std::string, T1, T2, T2, T2>(std::string(binningPolicy), categoryNeighbours, outsider, table, table, table));
-  } else {
-    return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<BinningPolicy, T1, T2, T2, T2>>(CombinationsBlockStrictlyUpperSameIndexPolicy<BinningPolicy, T1, T2, T2, T2>(binningPolicy, categoryNeighbours, outsider, table, table, table));
-  }
-}
-
-template <typename BinningPolicy, typename T1, typename... T2s>
-auto combinations(const BinningPolicy& binningPolicy, int categoryNeighbours, const T1& outsider, const T2s&... tables)
-{
-  if constexpr (old_interface::is_string<BinningPolicy>::value) {
-    LOG(warn) << "You are using obsolete interface for block combinations / event mixing, please update";
-    if constexpr (isSameType<T2s...>()) {
-      return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<std::string, T1, T2s...>>(CombinationsBlockStrictlyUpperSameIndexPolicy<std::string, T1, T2s...>(std::string(binningPolicy), categoryNeighbours, outsider, tables...));
-    } else {
-      return CombinationsGenerator<CombinationsBlockUpperIndexPolicy<std::string, T1, T2s...>>(CombinationsBlockUpperIndexPolicy<std::string, T1, T2s...>(std::string(binningPolicy), categoryNeighbours, outsider, tables...));
-    }
-  } else {
-    if constexpr (isSameType<T2s...>()) {
-      return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<BinningPolicy, T1, T2s...>>(CombinationsBlockStrictlyUpperSameIndexPolicy<BinningPolicy, T1, T2s...>(binningPolicy, categoryNeighbours, outsider, tables...));
-    } else {
-      return CombinationsGenerator<CombinationsBlockUpperIndexPolicy<BinningPolicy, T1, T2s...>>(CombinationsBlockUpperIndexPolicy<BinningPolicy, T1, T2s...>(binningPolicy, categoryNeighbours, outsider, tables...));
-    }
-  }
-}
-
-template <typename BinningPolicy, typename T1, typename... T2s>
-auto combinations(const BinningPolicy& binningPolicy, int categoryNeighbours, const T1& outsider, const o2::framework::expressions::Filter& filter, const T2s&... tables)
-{
-  if constexpr (old_interface::is_string<BinningPolicy>::value) {
-    LOG(warn) << "You are using obsolete interface for block combinations / event mixing, please update";
-    if constexpr (isSameType<T2s...>()) {
-      return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<std::string, T1, Filtered<T2s>...>>(CombinationsBlockStrictlyUpperSameIndexPolicy(std::string(binningPolicy), categoryNeighbours, outsider, tables.select(filter)...));
-    } else {
-      return CombinationsGenerator<CombinationsBlockUpperIndexPolicy<std::string, T1, Filtered<T2s>...>>(CombinationsBlockUpperIndexPolicy(std::string(binningPolicy), categoryNeighbours, outsider, tables.select(filter)...));
-    }
-  } else {
-    if constexpr (isSameType<T2s...>()) {
-      return CombinationsGenerator<CombinationsBlockStrictlyUpperSameIndexPolicy<BinningPolicy, T1, Filtered<T2s>...>>(CombinationsBlockStrictlyUpperSameIndexPolicy(binningPolicy, categoryNeighbours, outsider, tables.select(filter)...));
-    } else {
-      return CombinationsGenerator<CombinationsBlockUpperIndexPolicy<BinningPolicy, T1, Filtered<T2s>...>>(CombinationsBlockUpperIndexPolicy(binningPolicy, categoryNeighbours, outsider, tables.select(filter)...));
-    }
+    return CombinationsGenerator<CombinationsBlockUpperIndexPolicy<BP, T1, Filtered<T2s>...>>(CombinationsBlockUpperIndexPolicy(binningPolicy, categoryNeighbours, outsider, tables.select(filter)...));
   }
 }
 

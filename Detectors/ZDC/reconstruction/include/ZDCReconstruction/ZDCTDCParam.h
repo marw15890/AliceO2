@@ -32,8 +32,8 @@ struct ZDCTDCParam {
   float getShift(uint32_t ich) const;
   void setFactor(uint32_t ich, float val);
   float getFactor(uint32_t ich) const;
-  void print();
-  ClassDefNV(ZDCTDCParam, 1);
+  void print() const;
+  ClassDefNV(ZDCTDCParam, 2);
 };
 } // namespace zdc
 } // namespace o2

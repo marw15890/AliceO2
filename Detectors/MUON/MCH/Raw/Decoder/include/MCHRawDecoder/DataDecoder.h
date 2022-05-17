@@ -26,6 +26,7 @@
 
 #include "Headers/RDHAny.h"
 #include "DataFormatsMCH/Digit.h"
+#include "MCHBase/DecoderError.h"
 #include "MCHRawDecoder/OrbitInfo.h"
 #include "MCHRawDecoder/PageDecoder.h"
 
@@ -147,7 +148,6 @@ class DataDecoder
   using RawDigitVector = std::vector<RawDigit>;
 
   DataDecoder(SampaChannelHandler channelHandler, RdhHandler rdhHandler,
-              uint32_t sampaBcOffset,
               std::string mapCRUfile, std::string mapFECfile,
               bool ds2manu, bool verbose, bool useDummyElecMap, TimeRecoMode timeRecoMode = TimeRecoMode::HBPackets);
 
@@ -157,15 +157,12 @@ class DataDecoder
   /// Must be called before processing the TmeFrame buffer
   void setFirstOrbitInTF(uint32_t orbit);
 
-  /// Decode one TimeFrame buffer and fill the vector of digits
-  void decodeBuffer(gsl::span<const std::byte> buf);
-
-  /// Functions to set and get the calibration offset for the SAMPA time computation
-  void setSampaBcOffset(uint32_t offset) { mSampaTimeOffset = offset; }
-  uint32_t getSampaBcOffset() const { return mSampaTimeOffset; }
-  /// Helper function for subtracting the calibration offset from a given BC counter value
-  /// Returns the BC counter value after the offset correction
-  static uint32_t subtractBcOffset(uint32_t bc, uint32_t offset);
+  /** Decode one TimeFrame buffer and fill the vector of digits.
+   *  @return true if decoding went ok, or false otherwise.
+   *  if false is returned, the decoding of the (rest of the) TF should be
+   *  abandonned simply.
+   */
+  bool decodeBuffer(gsl::span<const std::byte> buf);
 
   /// For a given SAMPA chip, update the information about the BC counter value at the beginning of the TimeFrame
   void updateTimeFrameStartRecord(uint64_t chipId, uint32_t mFirstOrbitInTF, uint32_t bcTF);
@@ -179,11 +176,14 @@ class DataDecoder
   /// Compute the time of all the digits that have been decoded in the current TimeFrame
   void computeDigitsTimeBCRst();
   void computeDigitsTime();
+  void checkDigitsTime(int minDigitTimeAccepted, int maxDigitTimeAccepted);
 
   /// Get the vector of digits that have been decoded in the current TimeFrame
   const RawDigitVector& getDigits() const { return mDigits; }
   /// Get the list of orbits that have been found in the current TimeFrame for each CRU link
   const std::unordered_set<OrbitInfo, OrbitInfoHash>& getOrbits() const { return mOrbits; }
+  /// Get the list of decoding errors that have been found in the current TimeFrame
+  const std::vector<o2::mch::DecoderError>& getErrors() const { return mErrors; }
   /// Initialize the digits from an external vector. To be only used for unit tests.
   void setDigits(const RawDigitVector& digits) { mDigits = digits; }
 
@@ -234,6 +234,7 @@ class DataDecoder
 
   RawDigitVector mDigits;                               ///< vector of decoded digits
   std::unordered_set<OrbitInfo, OrbitInfoHash> mOrbits; ///< list of orbits in the processed buffer
+  std::vector<o2::mch::DecoderError> mErrors;           ///< list of decoding errors in the processed buffer
 
   uint32_t mOrbitsInTF{128};    ///< number of orbits in one time frame
   uint32_t mBcInOrbit;          ///< number of bunch crossings in one orbit

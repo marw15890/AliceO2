@@ -13,6 +13,7 @@ o2_add_library(
   MIDWorkflow
   TARGETVARNAME targetName
   SOURCES src/ClusterizerSpec.cxx
+          src/ColumnDataSpecsUtils.cxx
           src/DecodedDataAggregatorSpec.cxx
           src/DigitReaderSpec.cxx
           src/EntropyDecoderSpec.cxx
@@ -23,9 +24,11 @@ o2_add_library(
           src/ChannelCalibratorSpec.cxx
           src/RawCheckerSpec.cxx
           src/RawDecoderSpec.cxx
+          src/RawDumpSpec.cxx
           src/RawGBTDecoderSpec.cxx
           src/RawInputSpecHandler.cxx
           src/RawWriterSpec.cxx
+          src/TimingSpec.cxx
           src/TrackerSpec.cxx
           src/TrackReaderSpec.cxx
           src/ZeroSuppressionSpec.cxx
@@ -106,4 +109,10 @@ o2_add_executable(
   calibration-workflow
   COMPONENT_NAME mid
   SOURCES src/calibration-workflow.cxx
+  PUBLIC_LINK_LIBRARIES O2::MIDWorkflow)
+
+o2_add_executable(
+  raw-dump-workflow
+  COMPONENT_NAME mid
+  SOURCES src/raw-dump-workflow.cxx
   PUBLIC_LINK_LIBRARIES O2::MIDWorkflow)

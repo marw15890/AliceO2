@@ -102,7 +102,7 @@ void NoiseCalibrator::finalizeSlot(NoiseTimeSlot& slot)
   // check dead channels
   if (mDeadChannels) {
     LOG(info) << "NoiseCalibrator::finalizeSlot() : checking dead channels";
-    for (int i = 0; i < mDeadChannels.get()->size(); i++) {
+    for (unsigned int i = 0; i < mDeadChannels.get()->size(); i++) {
       badMapBool[(*mDeadChannels.get())[i]] = true;
     }
   }
@@ -110,7 +110,7 @@ void NoiseCalibrator::finalizeSlot(NoiseTimeSlot& slot)
   // check channels with very high pedestal value (> 511)
   if (mHighPedChannels) {
     LOG(info) << "NoiseCalibrator::finalizeSlot() : checking high ped channels";
-    for (int i = 0; i < mHighPedChannels.get()->size(); i++) {
+    for (unsigned int i = 0; i < mHighPedChannels.get()->size(); i++) {
       badMapBool[(*mHighPedChannels.get())[i]] = true;
     }
   }
@@ -137,7 +137,7 @@ void NoiseCalibrator::finalizeSlot(NoiseTimeSlot& slot)
   mCcdbInfoBadChannelMapVec.emplace_back("CPV/Calib/BadChannelMap", className, fileName, metaData, timeStamp, timeStamp + 31536000000); // one year validity time (in milliseconds!)
 }
 //_____________________________________________________________________________
-NoiseTimeSlot& NoiseCalibrator::emplaceNewSlot(bool front, uint64_t tstart, uint64_t tend)
+NoiseTimeSlot& NoiseCalibrator::emplaceNewSlot(bool front, TFType tstart, TFType tend)
 {
   LOG(info) << "NoiseCalibrator::emplaceNewSlot() : emplacing new Slot from tstart = " << tstart << " to " << tend;
   auto& cont = getSlots();
@@ -146,5 +146,5 @@ NoiseTimeSlot& NoiseCalibrator::emplaceNewSlot(bool front, uint64_t tstart, uint
   return slot;
 }
 //_____________________________________________________________________________
-} //end namespace cpv
-} //end namespace o2
+} // end namespace cpv
+} // end namespace o2

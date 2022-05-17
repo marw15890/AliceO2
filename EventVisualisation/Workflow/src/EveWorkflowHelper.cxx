@@ -13,6 +13,7 @@
 /// \author julian.myrcha@cern.ch
 
 #include <EveWorkflow/EveWorkflowHelper.h>
+#include "EventVisualisationDataConverter/VisualisationEventSerializer.h"
 #include "ReconstructionDataFormats/GlobalTrackID.h"
 #include "EveWorkflow/FileProducer.h"
 #include "DataFormatsTRD/TrackTRD.h"
@@ -25,40 +26,102 @@
 #include "MCHTracking/TrackParam.h"
 #include "MCHTracking/TrackExtrap.h"
 #include "DataFormatsITSMFT/TrkClusRef.h"
+#include "ITSMFTBase/DPLAlpideParam.h"
+#include "CommonDataFormat/IRFrame.h"
 
 using namespace o2::event_visualisation;
 
 void EveWorkflowHelper::selectTracks(const CalibObjectsConst* calib,
                                      GID::mask_t maskCl, GID::mask_t maskTrk, GID::mask_t maskMatch)
 {
-  auto creator = [maskTrk, this](auto& trk, GID gid, float time, float) {
+  std::vector<TBracket> itsROFBrackets;
+
+  if (mEnabledFilters.test(Filter::ITSROF)) {
+    const auto irFrames = getRecoContainer().getIRFramesITS();
+
+    static int BCDiffErrCount = 0;
+    constexpr int MAXBCDiffErrCount = 5;
+
+    auto bcDiffToTFTimeMUS = [startIR = getRecoContainer().startIR](const o2::InteractionRecord& ir) {
+      auto bcd = ir.differenceInBC(startIR);
+      if (uint64_t(bcd) > o2::constants::lhc::LHCMaxBunches * 256 && BCDiffErrCount < MAXBCDiffErrCount) {
+        LOGP(alarm, "ATTENTION: wrong bunches diff. {} for current IR {} wrt 1st TF orbit {}", bcd, ir, startIR);
+        BCDiffErrCount++;
+      }
+      return bcd * o2::constants::lhc::LHCBunchSpacingNS * 1e-3;
+    };
+
+    for (const auto& irFrame : irFrames) {
+      itsROFBrackets.emplace_back(bcDiffToTFTimeMUS(irFrame.getMin()), bcDiffToTFTimeMUS(irFrame.getMax()));
+    }
+  }
+
+  auto correctTrackTime = [this](auto& _tr, float t0, float terr) {
+    if constexpr (isTPCTrack<decltype(_tr)>()) {
+      // unconstrained TPC track, with t0 = TrackTPC.getTime0+0.5*(DeltaFwd-DeltaBwd) and terr = 0.5*(DeltaFwd+DeltaBwd) in TimeBins
+      t0 *= this->mTPCBin2MUS;
+      terr *= this->mTPCBin2MUS;
+    } else if constexpr (isITSTrack<decltype(_tr)>()) {
+      t0 += 0.5f * this->mITSROFrameLengthMUS;          // ITS time is supplied in \mus as beginning of ROF
+      terr *= this->mITSROFrameLengthMUS;               // error is supplied as a half-ROF duration, convert to \mus
+    } else if constexpr (isMFTTrack<decltype(_tr)>()) { // Same for MFT
+      t0 += 0.5f * this->mMFTROFrameLengthMUS;
+      terr *= this->mMFTROFrameLengthMUS;
+    } else if constexpr (isGlobalFwdTrack<decltype(_tr)>()) {
+      t0 = _tr.getTimeMUS().getTimeStamp();
+      terr = _tr.getTimeMUS().getTimeStampError() * mPVParams->nSigmaTimeTrack; // gaussian errors must be scaled by requested n-sigma
+    } else {
+      terr *= mPVParams->nSigmaTimeTrack; // gaussian errors must be scaled by requested n-sigma
+    }
+    // for all other tracks the time is in \mus with gaussian error
+    terr += mPVParams->timeMarginTrackTime;
+
+    return TBracket{t0 - terr, t0 + terr};
+  };
+
+  auto isInsideITSROF = [&itsROFBrackets](const TBracket& br) {
+    for (const auto& ir : itsROFBrackets) {
+      const auto overlap = ir.getOverlap(br);
+
+      if (overlap.isValid()) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  auto creator = [maskTrk, this, &correctTrackTime, &isInsideITSROF](auto& trk, GID gid, float time, float terr) {
     if (!maskTrk[gid.getSource()]) {
       return true;
     }
-    if constexpr (isTPCTrack<decltype(trk)>()) { // unconstrained TPC track, with t0 = TrackTPC.getTime0+0.5*(DeltaFwd-DeltaBwd) and terr = 0.5*(DeltaFwd+DeltaBwd) in TimeBins
-      time = trk.getTime0();                     // for TPC we need internal time, not the center of the possible interval
+
+    if (mEnabledFilters.test(Filter::TotalNTracks) && mTrackSet.trackGID.size() >= mMaxNTracks) {
+      return true;
     }
+
+    auto bracket = correctTrackTime(trk, time, terr);
+
+    if (mEnabledFilters.test(Filter::TimeBracket) && mTimeBracket.getOverlap(bracket).isInvalid()) {
+      return true;
+    }
+
+    if (mEnabledFilters.test(Filter::ITSROF) && !isInsideITSROF(bracket)) {
+      return true;
+    }
+
     mTrackSet.trackGID.push_back(gid);
-    mTrackSet.trackTime.push_back(time);
+    mTrackSet.trackTime.push_back(bracket.mean());
+
     return true;
   };
+
   this->mRecoCont.createTracksVariadic(creator);
 }
 
-void EveWorkflowHelper::draw(const std::string& jsonPath,
-                             int numberOfFiles,
-                             int numberOfTracks,
-                             o2::dataformats::GlobalTrackID::mask_t trkMask,
-                             o2::dataformats::GlobalTrackID::mask_t clMask,
-                             o2::header::DataHeader::RunNumberType runNumber,
-                             o2::framework::DataProcessingHeader::CreationTime creation,
-                             float workflowVersion)
+void EveWorkflowHelper::draw()
 {
-  size_t nTracks = mTrackSet.trackGID.size();
-  if (numberOfTracks != -1 && numberOfTracks < nTracks) {
-    nTracks = numberOfTracks; // less than available
-  }
-  for (size_t it = 0; it < nTracks; it++) {
+  for (size_t it = 0; it < mTrackSet.trackGID.size(); it++) {
     const auto& gid = mTrackSet.trackGID[it];
     auto tim = mTrackSet.trackTime[it];
     // LOG(info) << "EveWorkflowHelper::draw " << gid.asString();
@@ -103,9 +166,6 @@ void EveWorkflowHelper::draw(const std::string& jsonPath,
         LOG(info) << "Track type " << gid.getSource() << " not handled";
     }
   }
-
-  // save json file
-  save(jsonPath, numberOfFiles, trkMask, clMask, workflowVersion, runNumber, creation);
 }
 
 void EveWorkflowHelper::save(const std::string& jsonPath, int numberOfFiles,
@@ -125,7 +185,7 @@ void EveWorkflowHelper::save(const std::string& jsonPath, int numberOfFiles,
   mEvent.setCollisionTime(asciiCreationTime);
 
   FileProducer producer(jsonPath, numberOfFiles);
-  mEvent.toFile(producer.newFileName());
+  VisualisationEventSerializer::getInstance()->toFile(mEvent, producer.newFileName());
 }
 
 std::vector<PNT> EveWorkflowHelper::getTrackPoints(const o2::track::TrackPar& trc, float minR, float maxR, float maxStep, float minZ, float maxZ)
@@ -177,7 +237,7 @@ std::vector<PNT> EveWorkflowHelper::getTrackPoints(const o2::track::TrackPar& tr
   return pnts;
 }
 
-void EveWorkflowHelper::addTrackToEvent(const o2::track::TrackParCov& tr, GID gid, float trackTime, float dz, GID::Source source)
+void EveWorkflowHelper::addTrackToEvent(const o2::track::TrackParCov& tr, GID gid, float trackTime, float dz, GID::Source source, float maxStep)
 {
   if (source == GID::NSources) {
     source = (o2::dataformats::GlobalTrackID::Source)gid.getSource();
@@ -191,14 +251,14 @@ void EveWorkflowHelper::addTrackToEvent(const o2::track::TrackParCov& tr, GID gi
                                  .eta = tr.getEta(),
                                  .gid = gid.asString(),
                                  .source = source});
-  auto pnts = getTrackPoints(tr, minmaxR[source].first, minmaxR[source].second, 4, minmaxZ[source].first, minmaxZ[source].second);
+  auto pnts = getTrackPoints(tr, minmaxR[source].first, minmaxR[source].second, maxStep, minmaxZ[source].first, minmaxZ[source].second);
 
   for (size_t ip = 0; ip < pnts.size(); ip++) {
     vTrack->addPolyPoint(pnts[ip][0], pnts[ip][1], pnts[ip][2] + dz);
   }
 }
 
-void EveWorkflowHelper::prepareITSClusters(const o2::itsmft::TopologyDictionary& dict)
+void EveWorkflowHelper::prepareITSClusters(const o2::itsmft::TopologyDictionary* dict)
 {
   const auto& ITSClusterROFRec = mRecoCont.getITSClustersROFRecords();
   const auto& clusITS = mRecoCont.getITSClusters();
@@ -206,11 +266,11 @@ void EveWorkflowHelper::prepareITSClusters(const o2::itsmft::TopologyDictionary&
     const auto& patterns = mRecoCont.getITSClustersPatterns();
     auto pattIt = patterns.begin();
     mITSClustersArray.reserve(clusITS.size());
-    o2::its::ioutils::convertCompactClusters(clusITS, pattIt, mITSClustersArray, &dict);
+    o2::its::ioutils::convertCompactClusters(clusITS, pattIt, mITSClustersArray, dict);
   }
 }
 
-void EveWorkflowHelper::prepareMFTClusters(const o2::itsmft::TopologyDictionary& dict) // do we also have something as ITS...dict?
+void EveWorkflowHelper::prepareMFTClusters(const o2::itsmft::TopologyDictionary* dict) // do we also have something as ITS...dict?
 {
   const auto& MFTClusterROFRec = this->mRecoCont.getMFTClustersROFRecords();
   const auto& clusMFT = this->mRecoCont.getMFTClusters();
@@ -218,7 +278,7 @@ void EveWorkflowHelper::prepareMFTClusters(const o2::itsmft::TopologyDictionary&
     const auto& patterns = this->mRecoCont.getMFTClustersPatterns();
     auto pattIt = patterns.begin();
     this->mMFTClustersArray.reserve(clusMFT.size());
-    o2::mft::ioutils::convertCompactClusters(clusMFT, pattIt, this->mMFTClustersArray, &dict);
+    o2::mft::ioutils::convertCompactClusters(clusMFT, pattIt, this->mMFTClustersArray, dict);
   }
 }
 
@@ -285,7 +345,7 @@ void EveWorkflowHelper::drawTPCTOF(GID gid, float trackTime)
   drawTOFClusters(gid, trackTime);
 }
 
-void EveWorkflowHelper::drawAOD(EveWorkflowHelper::AODFullTrack const& track, float trackTime)
+void EveWorkflowHelper::drawAODBarrel(EveWorkflowHelper::AODBarrelTrack const& track, float trackTime)
 {
   std::array<float, 5> const arraypar = {track.y(), track.z(), track.snp(),
                                          track.tgl(), track.signed1Pt()};
@@ -298,7 +358,33 @@ void EveWorkflowHelper::drawAOD(EveWorkflowHelper::AODFullTrack const& track, fl
 
   auto const tr = o2::track::TrackParCov(track.x(), track.alpha(), arraypar, covpar);
 
-  addTrackToEvent(tr, GID::ITSTPCTRDTOF, trackTime, 0., GID::ITSTPCTRD);
+  addTrackToEvent(tr, GID{0, detectorMapToGIDSource(track.detectorMap())}, trackTime, 0.);
+}
+
+void EveWorkflowHelper::drawAODMFT(AODMFTTrack const& track, float trackTime)
+{
+  auto tr = o2::track::TrackParFwd();
+
+  tr.setZ(track.z());
+  tr.setParameters({track.x(), track.y(), track.phi(), track.tgl(), track.signed1Pt()});
+
+  std::vector<float> zPositions = {-40.f, -45.f, -65.f, -85.f}; // Selected z positions to draw the track
+  tr.propagateParamToZlinear(zPositions[0]);                    // Fix the track starting position.
+
+  auto vTrack = mEvent.addTrack({.time = static_cast<float>(trackTime),
+                                 .charge = (int)tr.getCharge(),
+                                 .PID = o2::track::PID::Muon,
+                                 .startXYZ = {(float)tr.getX(), (float)tr.getY(), (float)tr.getZ()},
+                                 .phi = (float)tr.getPhi(),
+                                 .theta = (float)tr.getTheta(),
+                                 .eta = (float)tr.getEta(),
+                                 .gid = GID::getSourceName(GID::MFT),
+                                 .source = GID::MFT});
+
+  for (auto zPos : zPositions) {
+    tr.propagateParamToZlinear(zPos);
+    vTrack->addPolyPoint((float)tr.getX(), (float)tr.getY(), (float)tr.getZ());
+  }
 }
 
 void EveWorkflowHelper::drawTOFClusters(GID gid, float trackTime)
@@ -363,7 +449,7 @@ void EveWorkflowHelper::drawTPCClusters(GID gid, float trackTimeTB)
     const auto& clTPC = trc.getCluster(mTPCTracksClusIdx, iCl, *mTPCClusterIdxStruct, sector, row);
 
     std::array<float, 3> xyz;
-    this->mTPCFastTransform->TransformIdeal(sector, row, clTPC.getPad(), clTPC.getTime(), xyz[0], xyz[1], xyz[2], trackTimeTB); // in sector coordinate
+    this->mTPCFastTransform->TransformIdeal(sector, row, clTPC.getPad(), clTPC.getTime(), xyz[0], xyz[1], xyz[2], trc.getTime0()); // in sector coordinate
     o2::math_utils::rotateZ(xyz, o2::math_utils::sector2Angle(sector % o2::tpc::SECTORSPERSIDE));                               // lab coordinate (global)
     mEvent.addCluster(xyz[0], xyz[1], xyz[2], trackTimeTB / mMUS2TPCTimeBins);
   }
@@ -388,7 +474,7 @@ void EveWorkflowHelper::drawTPC(GID gid, float trackTime)
   //  if (std::abs(tr.getEta()) < 0.05) {
   //    return;
   //  }
-  auto vTrack = mEvent.addTrack({.time = static_cast<float>(trackTime * 8 * o2::constants::lhc::LHCBunchSpacingMUS),
+  auto vTrack = mEvent.addTrack({.time = static_cast<float>(trackTime),
                                  .charge = tr.getCharge(),
                                  .PID = tr.getPID(),
                                  .startXYZ = {tr.getX(), tr.getY(), tr.getZ()},
@@ -409,7 +495,7 @@ void EveWorkflowHelper::drawTPC(GID gid, float trackTime)
 void EveWorkflowHelper::drawITS(GID gid, float trackTime)
 {
   const auto& tr = mRecoCont.getITSTrack(gid);
-  auto vTrack = mEvent.addTrack({.time = static_cast<float>(trackTime * 8 * o2::constants::lhc::LHCBunchSpacingMUS),
+  auto vTrack = mEvent.addTrack({.time = static_cast<float>(trackTime),
                                  .charge = tr.getCharge(),
                                  .PID = tr.getPID(),
                                  .startXYZ = {tr.getX(), tr.getY(), tr.getZ()},
@@ -440,8 +526,8 @@ void EveWorkflowHelper::drawMFT(GID gid, float trackTime)
                                  .PID = o2::track::PID::Muon,
                                  .startXYZ = {(float)tr.getX(), (float)tr.getY(), (float)tr.getZ()},
                                  .phi = (float)tr.getPhi(),
-                                 .theta = (float)tr.getTanl(),
-                                 .eta = (float)0,
+                                 .theta = (float)tr.getTheta(),
+                                 .eta = (float)tr.getEta(),
                                  .gid = gid.asString(),
                                  .source = GID::MFT});
   for (auto zPos : zPositions) {
@@ -559,7 +645,7 @@ void EveWorkflowHelper::drawTRDClusters(const o2::trd::TrackTRD& tpcTrdTrack, fl
   }
 }
 
-EveWorkflowHelper::EveWorkflowHelper()
+EveWorkflowHelper::EveWorkflowHelper(const FilterSet& enabledFilters, std::size_t maxNTracks, const TBracket& timeBracket) : mEnabledFilters(enabledFilters), mMaxNTracks(maxNTracks), mTimeBracket(timeBracket)
 {
   o2::mch::TrackExtrap::setField();
   this->mMFTGeom = o2::mft::GeometryTGeo::Instance();
@@ -569,4 +655,43 @@ EveWorkflowHelper::EveWorkflowHelper()
   this->mTPCFastTransform = (o2::tpc::TPCFastTransformHelperO2::instance()->create(0));
   const auto& elParams = o2::tpc::ParameterElectronics::Instance();
   mMUS2TPCTimeBins = 1. / elParams.ZbinWidth;
+  mTPCBin2MUS = elParams.ZbinWidth;
+
+  std::unique_ptr<o2::parameters::GRPObject> grp{o2::parameters::GRPObject::loadFrom()};
+
+  const auto& alpParamsITS = o2::itsmft::DPLAlpideParam<o2::detectors::DetID::ITS>::Instance();
+  mITSROFrameLengthMUS = grp->isDetContinuousReadOut(o2::detectors::DetID::ITS) ? alpParamsITS.roFrameLengthInBC * o2::constants::lhc::LHCBunchSpacingMUS : alpParamsITS.roFrameLengthTrig * 1.e-3;
+
+  const auto& alpParamsMFT = o2::itsmft::DPLAlpideParam<o2::detectors::DetID::MFT>::Instance();
+  mMFTROFrameLengthMUS = grp->isDetContinuousReadOut(o2::detectors::DetID::MFT) ? alpParamsMFT.roFrameLengthInBC * o2::constants::lhc::LHCBunchSpacingMUS : alpParamsMFT.roFrameLengthTrig * 1.e-3;
+
+  mPVParams = &o2::vertexing::PVertexerParams::Instance();
+}
+
+GID::Source EveWorkflowHelper::detectorMapToGIDSource(uint8_t dm)
+{
+  switch (dm) {
+    case static_cast<uint8_t>(o2::aod::track::ITS):
+      return GID::ITS;
+    case static_cast<uint8_t>(o2::aod::track::TPC):
+      return GID::TPC;
+    case static_cast<uint8_t>(o2::aod::track::TRD):
+      return GID::TRD;
+    case static_cast<uint8_t>(o2::aod::track::TOF):
+      return GID::TOF;
+    case static_cast<uint8_t>(o2::aod::track::ITS) | static_cast<uint8_t>(o2::aod::track::TPC):
+      return GID::ITSTPC;
+    case static_cast<uint8_t>(o2::aod::track::TPC) | static_cast<uint8_t>(o2::aod::track::TOF):
+      return GID::TPCTOF;
+    case static_cast<uint8_t>(o2::aod::track::TPC) | static_cast<uint8_t>(o2::aod::track::TRD):
+      return GID::TPCTRD;
+    case static_cast<uint8_t>(o2::aod::track::ITS) | static_cast<uint8_t>(o2::aod::track::TPC) | static_cast<uint8_t>(o2::aod::track::TRD):
+      return GID::ITSTPCTRD;
+    case static_cast<uint8_t>(o2::aod::track::ITS) | static_cast<uint8_t>(o2::aod::track::TPC) | static_cast<uint8_t>(o2::aod::track::TOF):
+      return GID::ITSTPCTOF;
+    case static_cast<uint8_t>(o2::aod::track::TPC) | static_cast<uint8_t>(o2::aod::track::TRD) | static_cast<uint8_t>(o2::aod::track::TOF):
+      return GID::TPCTRDTOF;
+    default:
+      return GID::ITSTPCTRDTOF;
+  }
 }

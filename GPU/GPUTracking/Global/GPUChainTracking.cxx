@@ -17,6 +17,7 @@
 #include "SimulationDataFormat/MCTruthContainer.h"
 #endif
 #include <fstream>
+#include <chrono>
 
 #include "GPUChainTracking.h"
 #include "GPUChainTrackingDefs.h"
@@ -34,7 +35,7 @@
 #include "GPUTRDTracker.h"
 #include "AliHLTTPCRawCluster.h"
 #include "GPUTRDTrackletLabels.h"
-#include "GPUDisplay.h"
+#include "display/GPUDisplayInterface.h"
 #include "GPUQA.h"
 #include "GPULogging.h"
 #include "GPUMemorySizeScalers.h"
@@ -363,7 +364,12 @@ int GPUChainTracking::Init()
     mQA.reset(new GPUQA(this));
   }
   if (GetProcessingSettings().eventDisplay) {
-    mEventDisplay.reset(new GPUDisplay(GetProcessingSettings().eventDisplay, this, mQA.get(), GetProcessingSettings().eventDisplayRenderer));
+#ifndef GPUCA_ALIROOT_LIB
+    mEventDisplay.reset(GPUDisplayInterface::getDisplay(GetProcessingSettings().eventDisplay, this, mQA.get()));
+#endif
+    if (mEventDisplay == nullptr) {
+      throw std::runtime_error("Error loading event display");
+    }
   }
 
   processors()->errorCodes.setMemory(mInputsHost->mErrorCodes);
@@ -559,6 +565,27 @@ void GPUChainTracking::SetTRDGeometry(std::unique_ptr<o2::trd::GeometryFlat>&& g
   processors()->calibObjects.trdGeometry = mTRDGeometryU.get();
 }
 
+void GPUChainTracking::DoQueuedCalibUpdates(int stream)
+{
+  if (mUpdateNewCalibObjects) {
+    void** pSrc = (void**)&mNewCalibObjects;
+    void** pDst = (void**)&processors()->calibObjects;
+    for (unsigned int i = 0; i < sizeof(mNewCalibObjects) / sizeof(void*); i++) {
+      if (pSrc[i]) {
+        pDst[i] = pSrc[i];
+      }
+    }
+    if (mRec->IsGPU()) {
+      mRec->ResetRegisteredMemoryPointers(mFlatObjectsShadow.mMemoryResFlat);
+      UpdateGPUCalibObjects(stream);
+    }
+  }
+  if ((mUpdateNewCalibObjects || mRec->slavesExist()) && mRec->IsGPU()) {
+    UpdateGPUCalibObjectsPtrs(stream); // Reinitialize
+  }
+  mUpdateNewCalibObjects = false;
+}
+
 int GPUChainTracking::RunChain()
 {
   if (GetProcessingSettings().ompAutoNThreads && !mRec->IsGPU()) {
@@ -577,23 +604,7 @@ int GPUChainTracking::RunChain()
   if (GetProcessingSettings().debugLevel >= 6) {
     *mDebugFile << "\n\nProcessing event " << mRec->getNEventsProcessed() << std::endl;
   }
-  if (mUpdateNewCalibObjects) {
-    void** pSrc = (void**)&mNewCalibObjects;
-    void** pDst = (void**)&processors()->calibObjects;
-    for (unsigned int i = 0; i < sizeof(mNewCalibObjects) / sizeof(void*); i++) {
-      if (pSrc[i]) {
-        pDst[i] = pSrc[i];
-      }
-    }
-    if (mRec->IsGPU()) {
-      mRec->ResetRegisteredMemoryPointers(mFlatObjectsShadow.mMemoryResFlat);
-      UpdateGPUCalibObjects(0);
-    }
-  }
-  if ((mUpdateNewCalibObjects || mRec->slavesExist()) && mRec->IsGPU()) {
-    UpdateGPUCalibObjectsPtrs(0); // Reinitialize
-  }
-  mUpdateNewCalibObjects = false;
+  DoQueuedCalibUpdates(0);
 
   mRec->getGeneralStepTimer(GeneralStep::Prepare).Start();
   try {
@@ -731,24 +742,24 @@ int GPUChainTracking::RunChainFinalize()
       if (GetProcessingSettings().eventDisplay->EnableSendKey()) {
         iKey = kbhit() ? getch() : 0;
         if (iKey == 'q') {
-          GetProcessingSettings().eventDisplay->mDisplayControl = 2;
+          GetProcessingSettings().eventDisplay->setDisplayControl(2);
         } else if (iKey == 'n') {
           break;
         } else if (iKey) {
-          while (GetProcessingSettings().eventDisplay->mSendKey != 0) {
+          while (GetProcessingSettings().eventDisplay->getSendKey() != 0) {
             Sleep(1);
           }
-          GetProcessingSettings().eventDisplay->mSendKey = iKey;
+          GetProcessingSettings().eventDisplay->setSendKey(iKey);
         }
       }
-    } while (GetProcessingSettings().eventDisplay->mDisplayControl == 0);
-    if (GetProcessingSettings().eventDisplay->mDisplayControl == 2) {
+    } while (GetProcessingSettings().eventDisplay->getDisplayControl() == 0);
+    if (GetProcessingSettings().eventDisplay->getDisplayControl() == 2) {
       mDisplayRunning = false;
       GetProcessingSettings().eventDisplay->DisplayExit();
       ProcessingSettings().eventDisplay = nullptr;
       return (2);
     }
-    GetProcessingSettings().eventDisplay->mDisplayControl = 0;
+    GetProcessingSettings().eventDisplay->setDisplayControl(0);
     GPUInfo("Loading next event");
 
     mEventDisplay->WaitForNextEvent();
@@ -811,9 +822,29 @@ int GPUChainTracking::CheckErrorCodes(bool cpuOnly)
       }
     }
     if (processors()->errorCodes.hasError()) {
+      static int errorsShown = 0;
+      static bool quiet = false;
+      static std::chrono::time_point<std::chrono::steady_clock> silenceFrom;
+      if (!quiet && errorsShown++ >= 10 && GetProcessingSettings().throttleAlarms) {
+        silenceFrom = std::chrono::steady_clock::now();
+        quiet = true;
+      } else if (quiet) {
+        auto currentTime = std::chrono::steady_clock::now();
+        std::chrono::duration<double> elapsed_seconds = currentTime - silenceFrom;
+        if (elapsed_seconds.count() > 60 * 10) {
+          quiet = false;
+          errorsShown = 1;
+        }
+      }
       retVal = 1;
-      GPUError("GPUReconstruction suffered from an error in the %s part", i ? "GPU" : "CPU");
-      processors()->errorCodes.printErrors();
+      if (GetProcessingSettings().throttleAlarms) {
+        GPUWarning("GPUReconstruction suffered from an error in the %s part", i ? "GPU" : "CPU");
+      } else {
+        GPUError("GPUReconstruction suffered from an error in the %s part", i ? "GPU" : "CPU");
+      }
+      if (!quiet) {
+        processors()->errorCodes.printErrors(GetProcessingSettings().throttleAlarms);
+      }
     }
   }
   return retVal;

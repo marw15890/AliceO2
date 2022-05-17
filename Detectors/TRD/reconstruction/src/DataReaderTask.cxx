@@ -262,13 +262,13 @@ void DataReaderTask::run(ProcessingContext& pc)
 
   std::vector<InputSpec> sel{InputSpec{"filter", ConcreteDataTypeMatcher{"TRD", "RAWDATA"}}};
   uint64_t tfCount = 0;
-  for (const auto& ref : InputRecordWalker(pc.inputs(), sel)) {
+  for (auto& ref : InputRecordWalker(pc.inputs(), sel)) {
     auto inputprocessingstart = std::chrono::high_resolution_clock::now(); // measure total processing time
     const auto* dh = DataRefUtils::getHeader<o2::header::DataHeader*>(ref);
     tfCount = dh->tfCounter;
-    auto payloadIn = ref.payload;
+    const char* payloadIn = ref.payload;
     auto payloadInSize = DataRefUtils::getPayloadSize(ref);
-    if (mVerbose) {
+    if (mHeaderVerbose) {
       LOGP(info, "Found input [{}/{}/{:#x}] TF#{} 1st_orbit:{} Payload {} : ",
            dh->dataOrigin.str, dh->dataDescription.str, dh->subSpecification, dh->tfCounter, dh->firstTForbit, payloadInSize);
     }
