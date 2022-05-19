@@ -21,6 +21,7 @@
 #include <queue>
 #include <mutex>
 #include <condition_variable>
+#include <array>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -121,7 +122,7 @@ GPUReconstruction::~GPUReconstruction()
 void GPUReconstruction::GetITSTraits(std::unique_ptr<o2::its::TrackerTraits>* trackerTraits, std::unique_ptr<o2::its::VertexerTraits>* vertexerTraits)
 {
   if (trackerTraits) {
-    trackerTraits->reset(new o2::its::TrackerTraitsCPU);
+    trackerTraits->reset(new o2::its::TrackerTraits);
   }
   if (vertexerTraits) {
     vertexerTraits->reset(new o2::its::VertexerTraits);
