@@ -957,7 +957,8 @@ void DataProcessingDevice::doPrepare(DataProcessorContext& context)
   LOGP(debug, "oldest possible timeframe range {}, {} => {} delta", currentOldest.value, currentNewest.value,
        delta);
   auto& infos = context.deviceContext->state->inputChannelInfos;
-  auto newEnd = std::remove_if(pollOrder.begin(), pollOrder.end(), [&infos, limitNew = currentOldest.value + 32](int a) -> bool {
+  static int ahead = getenv("DPL_MAX_CHANNEL_AHEAD") ? std::atoi(getenv("DPL_MAX_CHANNEL_AHEAD")) : 16;
+  auto newEnd = std::remove_if(pollOrder.begin(), pollOrder.end(), [&infos, limitNew = currentOldest.value + ahead](int a) -> bool {
     return infos[a].oldestForChannel.value > limitNew;
   });
   pollOrder.erase(newEnd, pollOrder.end());
@@ -1672,13 +1673,14 @@ bool DataProcessingDevice::tryDispatchComputation(DataProcessorContext& context,
       }
     }
     for (size_t fi = 0; fi < spec->forwards.size(); fi++) {
-      if (forwardedParts[fi].Size() == 0) {
-        continue;
-      }
       auto& channel = device->GetChannel(spec->forwards[fi].channel, 0);
-      // in DPL we are using subchannel 0 only
-      channel.Send(forwardedParts[fi]);
-
+      if (forwardedParts[fi].Size() != 0) {
+        // in DPL we are using subchannel 0 only
+        channel.Send(forwardedParts[fi]);
+      }
+    }
+    for (size_t fi = 0; fi < spec->forwards.size(); fi++) {
+      auto& channel = device->GetChannel(spec->forwards[fi].channel, 0);
       // The oldest possible timeslice for a forwarded message
       // is conservatively the one of the device doing the forwarding.
       if (spec->forwards[fi].channel.rfind("from_", 0) == 0) {
