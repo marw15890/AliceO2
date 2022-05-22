@@ -82,5 +82,4 @@ bazel-*
 
 # LSP support on macOS with vim
 .clangd
-/.vs/AliceO2/FileContentIndex/merges
-/.vs
+
