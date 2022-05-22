@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import sys
+import os
 import numpy as np
 import re
 import ALICEO2dataModelTools as O2DMT
@@ -9,28 +10,33 @@ import ALICEO2dataModelTools as O2DMT
 #
 # .............................................................................
 # types of column declarations
-# 0: COLUMN
-# 1: INDEX_COLUMN_FULL
-# 2: INDEX_COLUMN
-# 3: SELF_INDEX_COLUMN_FULL
-# 4: SELF_INDEX_COLUMN
-# 5: EXPRESSION_COLUMN
-# 6: DYNAMIC_COLUMN
-# 7: SLICE_INDEX_COLUMN
-# 8: SLICE_INDEX_COLUMN_FULL
+#  0: COLUMN
+#  1: INDEX_COLUMN_FULL
+#  2: INDEX_COLUMN
+#  3: SELF_INDEX_COLUMN_FULL
+#  4: SELF_INDEX_COLUMN
+#  5: EXPRESSION_COLUMN
+#  6: DYNAMIC_COLUMN
+#  7: SLICE_INDEX_COLUMN
+#  8: SLICE_INDEX_COLUMN_FULL
+#  9: SELF_SLICE_INDEX_COLUMN
+# 10: SELF_ARRAY_INDEX_COLUMN
 
 def columnTypes(abbr=0):
   if abbr == 0:
-    types = ["", "INDEX_", "INDEX_", "INDEX_", "INDEX_", "EXPRESSION_", "DYNAMIC_", "SLICE_INDEX_", "SLICE_INDEX_"]
+    types = ["", "INDEX_", "INDEX_", "INDEX_", "INDEX_", "EXPRESSION_", "DYNAMIC_", "SLICE_INDEX_", "SLICE_INDEX_", "SLICE_INDEX_", "ARRAY_INDEX_"]
     types[3] = "SELF_"+types[3]
     types[4] = "SELF_"+types[4]
+    types[9] = "SELF_"+types[9]
+    types[10] = "SELF_"+types[10]
     types = [s+"COLUMN" for s in types]
     types = ["DECLARE_SOA_"+s for s in types]
     types[1] = types[1]+"_FULL"
     types[3] = types[3]+"_FULL"
     types[8] = types[8]+"_FULL"
   else:
-    types = ["", "I", "I", "SI", "SI", "E", "D", "SLI", "SLI", "GI"]
+    # always add "GI" as last element
+    types = ["", "I", "I", "SI", "SI", "E", "D", "SLI", "SLI", "SSLI", "SAI", "GI"]
 
   return types
 
@@ -341,19 +347,20 @@ class datamodel:
       self.delimJoins = ""
       # update with values from initCard
       if initCard != None:
+        psep = os.path.sep
         self.initCard = initCard
         tmp = initCard.find("O2general/mainDir/O2local")
         if tmp != None:
-          self.O2path = tmp.text.strip()
+          self.O2path = tmp.text.strip().rstrip(psep)+psep
         tmp = initCard.find("O2general/mainDir/O2Physicslocal")
         if tmp != None:
-          self.O2Physicspath = tmp.text.strip()
+          self.O2Physicspath = tmp.text.strip().rstrip(psep)+psep
         tmp = initCard.find("O2general/mainDir/O2GitHub")
         if tmp != None:
-          self.O2href = tmp.text.strip()
+          self.O2href = tmp.text.strip().rstrip(psep)+psep
         tmp = initCard.find("O2general/mainDir/O2PhysicsGitHub")
         if tmp != None:
-          self.O2Physicshref = tmp.text.strip()
+          self.O2Physicshref = tmp.text.strip().rstrip(psep)+psep
         tmp = initCard.find("O2general/delimAO2D")
         if tmp != None:
           self.delimAO2D = tmp.text.strip()
@@ -567,12 +574,12 @@ class datamodel:
     print("    </div>")
 
     # print header file
-    if tab2u.hfile.startswith(self.O2path):
-      href2u = self.O2href
-      path2u = self.O2path
-    else:
+    if "O2Physics" in tab2u.hfile:
       href2u = self.O2Physicshref
       path2u = self.O2Physicspath
+    else:
+      href2u = self.O2href
+      path2u = self.O2path
  
     hf2u = O2DMT.block(tab2u.hfile.split(path2u)[
                  1:], False).strip().lstrip("/")
@@ -631,12 +638,12 @@ class datamodel:
     print("#### ", CER[2])
     
     # add source code information if available
-    if CER[0].startswith(self.O2path):
-      href2u = self.O2href
-      path2u = self.O2path
-    else:
+    if "O2Physics" in CER[0]:
       href2u = self.O2Physicshref
       path2u = self.O2Physicspath
+    else:
+      href2u = self.O2href
+      path2u = self.O2path
     
     if DMtype == 1:
       if href2u != "":
@@ -969,8 +976,11 @@ def extractColumns(nslevel, content):
     if kind in [1, 2, 3, 4]:
       cname = cname+"Id"
       gname = gname+"Id"
-    if kind in [7,8]:
+    if kind in [7,8,9]:
       cname = cname+"IdSlice"
+      gname = gname+"Ids"
+    if kind in [10]:
+      cname = cname+"Ids"
       gname = gname+"Ids"
 
     # determine the type of the colums
@@ -999,9 +1009,7 @@ def extractColumns(nslevel, content):
         type = O2DMT.block(cont[iarr[0]+2:iarr[0]+2+iend[0]], False)
       else:
         type = "?"
-    elif words[icol].txt == types[7]:
-      type = "int32_t"
-    elif words[icol].txt == types[8]:
+    elif words[icol].txt in types[7:10]:
       type = "int32_t"
 
     # kind, namespace, name, type, cont
